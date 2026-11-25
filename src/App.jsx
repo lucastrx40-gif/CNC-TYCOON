@@ -3585,4 +3585,3 @@ export default function App() {
   // VUE 7 : CLASSEMENT GÉNÉRAL INDUSTRIEL
   // ==========================================================================
   const renderLeaderboardTab = () => (
-    <
