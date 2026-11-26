@@ -968,6 +968,11 @@ export default function App() {
   const [atelier, setAtelier] = useState({ sizeId: 'garage', floorId: 'concrete', extras: [] });
   const [activeTab, setActiveTab] = useState('workshop');
   const [selectedSlotIdx, setSelectedSlotIdx] = useState(0);
+  const [assignModalSlotIdx, setAssignModalSlotIdx] = useState(null);
+  const [assignFilterRarity, setAssignFilterRarity] = useState('all');
+  const [assignOnlyAvailable, setAssignOnlyAvailable] = useState(false);
+  const [assignOnlySpecialty, setAssignOnlySpecialty] = useState(false);
+  const [assignSortBy, setAssignSortBy] = useState('effective_desc');
   const [leaderboard, setLeaderboard] = useState([]);
   const [toasts, setToasts] = useState([]);
   const [showTutorial, setShowTutorial] = useState(() => !localStorage.getItem('cnc_gmp_tuto_seen'));
@@ -1959,27 +1964,45 @@ export default function App() {
                     </div>
                     <div>
                       <label className="text-[10px] text-slate-400 font-bold block mb-1">Opérateur affecté</label>
-                      <select
-                        value={slot.employeeId || ''}
-                        onChange={e => {
-                          const empId = e.target.value || null;
-                          setSlots(prev =>
-                            prev.map((s, i) => {
-                              if (i === idx) return { ...s, employeeId: empId };
-                              if (empId && s.employeeId === empId) return { ...s, employeeId: null };
-                              return s;
-                            })
-                          );
-                        }}
-                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-white font-bold"
-                      >
-                        <option value="">-- Aucun opérateur --</option>
-                        {ownedEmployees.map(emp => (
-                          <option key={emp.id} value={emp.id}>
-                            {emp.name} ({emp.baseMult >= 0 ? `+${Math.round(emp.baseMult * 100)}%` : `${Math.round(emp.baseMult * 100)}%`})
-                          </option>
-                        ))}
-                      </select>
+                      {(() => {
+                        const assignedEmp = slot.employeeId ? EMPLOYEES_CATALOG.find(e => e.id === slot.employeeId) : null;
+                        const assignedOwned = assignedEmp ? inventory[assignedEmp.id] : null;
+                        const assignedRar = assignedEmp ? (RARITY_CONFIG[assignedEmp.rarity] || RARITY_CONFIG.commun) : null;
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAssignFilterRarity('all');
+                              setAssignOnlyAvailable(false);
+                              setAssignOnlySpecialty(false);
+                              setAssignSortBy('effective_desc');
+                              setAssignModalSlotIdx(idx);
+                            }}
+                            className={`w-full bg-slate-900 hover:bg-slate-800 border rounded-xl px-2.5 py-1.5 text-left flex items-center justify-between gap-2 transition-all ${
+                              assignedEmp ? 'border-sky-500/60' : 'border-slate-700 hover:border-sky-500/50'
+                            }`}
+                          >
+                            {assignedEmp ? (
+                              <div className="flex items-center gap-2 min-w-0">
+                                <CharacterPortrait emp={assignedEmp} sizeClass="w-6 h-6" />
+                                <div className="min-w-0">
+                                  <div className="text-xs font-black text-white truncate">
+                                    {assignedEmp.name} <span className="text-amber-400">{'★'.repeat(assignedOwned?.stars || 1)}</span>
+                                  </div>
+                                  <div className={`text-[10px] font-bold truncate ${assignedEmp.baseMult >= 0 ? 'text-emerald-400' : 'text-lime-400'}`}>
+                                    {assignedEmp.baseMult >= 0 ? `+${Math.round(assignedEmp.baseMult * 100)}%` : `${Math.round(assignedEmp.baseMult * 100)}%`} • {assignedRar?.label}
+                                  </div>
+                                </div>
+                              </div>
+                            ) : (
+                              <span className="text-xs font-bold text-slate-400">+ Choisir une carte opérateur...</span>
+                            )}
+                            <span className="text-[10px] font-black px-2 py-0.5 rounded-lg bg-sky-600/20 text-sky-300 border border-sky-500/30 shrink-0">
+                              Cartes
+                            </span>
+                          </button>
+                        );
+                      })()}
                     </div>
                   </div>
                 </div>
@@ -3038,14 +3061,14 @@ export default function App() {
         </div>
 
         <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4 space-y-2.5">
-          <h3 className="text-sm font-black text-white">Logistique &amp; Infrastructures Lourdes</h3>
+          <h3 className="text-sm font-black text-white">Équipements Logistiques</h3>
           {ATELIER_UPGRADES.extras.map(ex => {
             const owned = atelier.extras.includes(ex.id);
             return (
               <div key={ex.id} className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
                 <div>
                   <div className="text-xs font-black text-white">{ex.name}</div>
-                  <div className="text-[11px] text-emerald-400 font-bold">{ex.effect}</div>
+                  <div className="text-[11px] text-slate-400">{ex.effect} • {ex.desc}</div>
                 </div>
                 {owned ? (
                   <span className="text-xs font-black text-emerald-400">✓ Installé</span>
@@ -3056,7 +3079,7 @@ export default function App() {
                       adjustMoney(-ex.cost);
                       setAtelier(a => ({ ...a, extras: [...a.extras, ex.id] }));
                     }}
-                    className="px-3 py-1.5 rounded-xl bg-amber-500 text-slate-950 text-xs font-black"
+                    className="px-3 py-1.5 rounded-xl bg-sky-600 text-white text-xs font-black"
                   >
                     {formatMoney(ex.cost)}
                   </button>
@@ -3071,188 +3094,173 @@ export default function App() {
 
   const renderLeaderboard = () => (
     <div className="space-y-4">
-      <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4 space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h2 className="text-base font-black text-white flex items-center gap-2">
-              <Save className="w-5 h-5 text-emerald-400" /> Sécurité &amp; Sauvegarde de votre Progression
-            </h2>
-            <p className="text-xs text-slate-400">
-              Sauvegarde automatique double-miroir + Cloud GMP • Dernière écriture :{' '}
-              <b className="text-emerald-300">{lastSavedAt ? new Date(lastSavedAt).toLocaleTimeString() : 'Active'}</b>
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              onClick={async () => {
-                const snap = persistLocalNow(pseudo);
-                if (snap) await syncFullSaveToCloud(snap, true);
-                addToast('Partie sauvegardée (Local + Cloud GMP) !', 'success');
-              }}
-              className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black flex items-center gap-1.5"
-            >
-              <Save className="w-3.5 h-3.5" /> Sauvegarder Maintenant
-            </button>
-            <button
-              onClick={() => {
-                const snap = persistLocalNow(pseudo);
-                if (!snap) return;
-                const code = encodeSecureSave(snap);
-                if (navigator.clipboard) navigator.clipboard.writeText(code).catch(() => {});
-                setImportCodeText(code);
-                addToast('Code de sauvegarde copié dans le presse-papiers !', 'success');
-              }}
-              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-sky-300 text-xs font-black flex items-center gap-1.5"
-            >
-              <Download className="w-3.5 h-3.5" /> Exporter Code
-            </button>
-          </div>
+      <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-base font-black text-white flex items-center gap-2">
+            <Trophy className="w-5 h-5 text-amber-400" /> Classement Général Saison 2
+          </h2>
+          <p className="text-xs text-slate-400">
+            Synchronisé automatiquement à chaque connexion • Dernière sauvegarde :{' '}
+            <b className="text-emerald-400">{lastSavedAt ? new Date(lastSavedAt).toLocaleTimeString() : 'Active'}</b>
+          </p>
         </div>
-
-        <div className="flex flex-col sm:flex-row gap-2">
-          <input
-            type="text"
-            value={importCodeText}
-            onChange={e => setImportCodeText(e.target.value)}
-            placeholder="Collez ici un code GMPSEC2... pour restaurer une sauvegarde"
-            className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 outline-none focus:border-sky-500"
-          />
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => {
-              const decoded = decodeSecureSave(importCodeText.trim());
-              if (!decoded) return addToast('Code de sauvegarde invalide ou corrompu.', 'error');
-              applySavedState(decoded);
               const snap = persistLocalNow(pseudo);
               if (snap) syncFullSaveToCloud(snap, true);
-              addToast('Sauvegarde restaurée avec succès !', 'success');
+              syncAndFetchLeaderboard();
+              addToast('Sauvegarde locale + Cloud effectuée !', 'success');
             }}
-            className="px-3.5 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-black flex items-center justify-center gap-1.5"
+            className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black flex items-center gap-1.5"
           >
-            <Upload className="w-3.5 h-3.5" /> Restaurer
+            <Save className="w-3.5 h-3.5" /> Sauvegarder
+          </button>
+          <button
+            onClick={() => syncAndFetchLeaderboard()}
+            className="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-black flex items-center gap-1.5"
+          >
+            <RefreshCw className="w-3.5 h-3.5" /> Actualiser
+          </button>
+          <button
+            onClick={() => {
+              const snap = persistLocalNow(pseudo);
+              if (snap) syncFullSaveToCloud(snap, true);
+              localStorage.removeItem('cnc_pseudo');
+              localStorage.removeItem('cnc_password');
+              setIsLoggedIn(false);
+            }}
+            className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-rose-950 text-slate-300 hover:text-rose-300 text-xs font-black flex items-center gap-1.5"
+          >
+            <LogOut className="w-3.5 h-3.5" /> Déconnexion
           </button>
         </div>
       </div>
 
-      <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-base font-black text-white flex items-center gap-2">
-              <Trophy className="w-5 h-5 text-amber-400" /> Classement Général GMP (Saison 2)
-            </h2>
-            <p className="text-xs text-slate-400">Connecté en tant que <b className="text-sky-400">{pseudo}</b></p>
-          </div>
-          <div className="flex gap-2">
-            <button onClick={fetchLeaderboard} className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold flex items-center gap-1.5">
-              <RefreshCw className="w-3.5 h-3.5" /> Actualiser
-            </button>
-            <button
-              onClick={async () => {
-                const snap = persistLocalNow(pseudo);
-                if (snap) await syncFullSaveToCloud(snap, true);
-                localStorage.removeItem('cnc_pseudo');
-                setIsLoggedIn(false);
-              }}
-              className="px-3 py-1.5 rounded-xl bg-rose-950/60 border border-rose-800 text-rose-300 text-xs font-bold flex items-center gap-1.5"
-            >
-              <LogOut className="w-3.5 h-3.5" /> Déconnexion
-            </button>
-          </div>
+      <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4 space-y-2.5">
+        <div className="text-xs font-black text-slate-300 flex items-center justify-between">
+          <span>Code de Transfert / Sauvegarde de Secours</span>
+          <button
+            type="button"
+            onClick={() => {
+              const snap = persistLocalNow(pseudo);
+              if (!snap) return;
+              const code = encodeSecureSave(snap);
+              if (navigator.clipboard) {
+                navigator.clipboard.writeText(code).then(() => addToast('Code de sauvegarde copié !', 'success')).catch(() => setImportCodeText(code));
+              } else {
+                setImportCodeText(code);
+              }
+            }}
+            className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-300 text-[11px] font-black flex items-center gap-1"
+          >
+            <Download className="w-3 h-3" /> Copier mon code
+          </button>
         </div>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={importCodeText}
+            onChange={e => setImportCodeText(e.target.value)}
+            placeholder="Collez ici un code GMPSEC2... pour restaurer une partie"
+            className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-slate-200 outline-none focus:border-sky-500"
+          />
+          <button
+            type="button"
+            onClick={() => {
+              const decoded = decodeSecureSave(importCodeText.trim());
+              if (!decoded) return addToast('Code de sauvegarde invalide ou altéré.', 'error');
+              applySavedState(decoded);
+              const snap = persistLocalNow(pseudo);
+              if (snap) syncFullSaveToCloud(snap, true);
+              setImportCodeText('');
+              addToast('Partie restaurée avec succès !', 'success');
+            }}
+            className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-slate-950 text-xs font-black flex items-center gap-1"
+          >
+            <Upload className="w-3 h-3" /> Restaurer
+          </button>
+        </div>
+      </div>
 
-        <div className="space-y-2">
-          {leaderboard.length === 0 ? (
-            <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300 flex justify-between">
-              <span>#1 {pseudo} (Vous)</span>
-              <span className="font-black text-emerald-400">{formatMoney(money)} • Rép {reputation}/100</span>
-            </div>
-          ) : (
-            leaderboard.map((row, idx) => (
-              <div
-                key={`${row.pseudo}_${idx}`}
-                className={`p-3 rounded-xl border flex items-center justify-between text-xs ${
-                  row.pseudo === pseudo ? 'bg-sky-950/40 border-sky-500' : 'bg-slate-950 border-slate-800'
-                }`}
-              >
-                <div className="flex items-center gap-2.5 font-black">
-                  <span className="text-amber-400 w-6">#{idx + 1}</span>
-                  <span className="text-white">{row.pseudo}</span>
+      <div className="bg-slate-900/95 border border-slate-800 rounded-2xl overflow-hidden">
+        {leaderboard.length === 0 ? (
+          <div className="p-8 text-center text-xs text-slate-400">
+            Aucun score en ligne chargé (vérifiez votre configuration Firebase ou cliquez sur Actualiser).
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-800">
+            {leaderboard.map((row, idx) => (
+              <div key={idx} className={`px-4 py-3 flex items-center justify-between text-xs ${row.pseudo === pseudo ? 'bg-sky-950/30' : ''}`}>
+                <div className="flex items-center gap-3">
+                  <span className={`w-6 h-6 rounded-full flex items-center justify-center font-black ${idx === 0 ? 'bg-amber-400 text-slate-950' : idx === 1 ? 'bg-slate-300 text-slate-950' : idx === 2 ? 'bg-amber-700 text-white' : 'bg-slate-800 text-slate-400'}`}>
+                    {idx + 1}
+                  </span>
+                  <div>
+                    <div className="font-black text-white">{row.pseudo}</div>
+                    <div className="text-[10px] text-slate-400">Réputation {row.reputation || 10}/100 • {row.partsProduced || 0} pcs</div>
+                  </div>
                 </div>
-                <div className="flex items-center gap-4">
-                  <span className="text-slate-400">{row.partsProduced || 0} pcs</span>
-                  <span className="text-emerald-400 font-black">{formatMoney(row.money || 0)}</span>
-                </div>
+                <div className="font-black text-emerald-400 text-sm">{formatMoney(row.money || 0)}</div>
               </div>
-            ))
-          )}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
 
-  // ============================================================================
-  // 7. RENDU GLOBAL DE L'APPLICATION
-  // ============================================================================
+  const tutorialSteps = [
+    { title: '1. Atelier & Prototypage Manuel', text: 'Cliquez sur « Usiner une pièce » dans l’onglet Atelier pour fabriquer vos premières entretoises Aluminium.' },
+    { title: '2. Contrôle & Vente', text: 'Passez par Métrologie pour valider la conformité de vos lots, puis expédiez-les dans Stocks & Ventes.' },
+    { title: '3. Automatisation & Machines', text: 'Achetez des machines dans Parc Machines et approvisionnez vos matières premières (Aluminium, Acier, Inox, Titane).' },
+    { title: '4. Constellation R&D & Équipe RH', text: 'Débloquez de nouvelles technologies et recrutez des opérateurs (Cartes RH) pour booster vos cadences.' }
+  ];
+
   const readyMissionCount = MISSIONS_CATALOG.filter(
     m => !claimedMissions.includes(m.id) && Number(stats[m.statKey] || 0) >= m.target
   ).length;
-  const uninspectedAlertCount = partLots.filter(l => !l.inspected).reduce((a, b) => a + b.qty, 0);
-  const readyPartsAlertCount = partLots.filter(l => l.inspected && l.isConforming).reduce((a, b) => a + b.qty, 0);
-  const noMatSlotsCount = slots.filter(s => s.status === 'NO_MAT').length;
+  const uninspectedPartsBadge = partLots.filter(l => !l.inspected).reduce((a, b) => a + b.qty, 0);
+  const readyToSellBadge = partLots.filter(l => l.inspected && l.isConforming).reduce((a, b) => a + b.qty, 0);
+  const noMatSlotsBadge = slots.filter(s => s.machineId && s.status === 'NO_MAT').length;
 
   const navItems = [
-    { id: 'workshop', label: 'Atelier', sub: 'Plan 2D', icon: Wrench, color: 'text-sky-400', activeBg: 'from-sky-600 to-blue-600', badge: 0 },
-    { id: 'machines', label: 'Machines', sub: `${slots.filter(s => s.machineId).length}/${slots.length} îlots`, icon: Cog, color: 'text-cyan-400', activeBg: 'from-cyan-600 to-sky-600', badge: noMatSlotsCount },
-    { id: 'stocks', label: 'Stocks', sub: 'Matières & Lots', icon: Package, color: 'text-amber-400', activeBg: 'from-amber-600 to-orange-600', badge: readyPartsAlertCount > 0 ? 1 : 0 },
-    { id: 'metrology', label: 'Métrologie', sub: 'Contrôle', icon: Gauge, color: 'text-emerald-400', activeBg: 'from-emerald-600 to-teal-600', badge: uninspectedAlertCount },
-    { id: 'contracts', label: 'Contrats', sub: `Rép ${reputation}`, icon: FileSpreadsheet, color: 'text-indigo-400', activeBg: 'from-indigo-600 to-blue-600', badge: 0 },
-    { id: 'gacha', label: 'Cartes RH', sub: 'Recrutement', icon: Gift, color: 'text-pink-400', activeBg: 'from-pink-600 to-rose-600', badge: 0 },
-    { id: 'atelier', label: 'Locaux', sub: 'Bâtiments', icon: Building2, color: 'text-orange-400', activeBg: 'from-orange-600 to-amber-600', badge: 0 },
-    { id: 'leaderboard', label: 'Classement', sub: 'Top GMP', icon: Trophy, color: 'text-yellow-400', activeBg: 'from-yellow-600 to-amber-600', badge: 0 }
-  ];
-
-  const tutorialSteps = [
-    {
-      title: '1. Usinage Manuel & Contrôle Qualité',
-      text: 'Dans Atelier, cliquez sur "USINER UNE PIÈCE" pour produire des entretoises en Aluminium, contrôlez-les en Métrologie puis vendez-les dans Stocks.'
-    },
-    {
-      title: '2. Parc Machines & Matières Premières',
-      text: 'Achetez votre première Perceuse ou Tour Conventionnel dans Machines, et gérez vos stocks d’Aluminium et d’Acier dans Stocks.'
-    },
-    {
-      title: '3. Constellation R&D & Recrutement RH',
-      text: 'Débloquez les nouvelles technologies dans la Constellation R&D (bouton en haut) et recrutez vos opérateurs dans Cartes RH.'
-    },
-    {
-      title: '4. Métrologie & Appels d’Offres',
-      text: 'Livrez des séries conformes aux grands industriels (Airbus, Safran, ArianeGroup) pour gagner des Points R&D et grimper en réputation.'
-    }
+    { id: 'workshop', label: 'Atelier', sub: 'Plan 2D & Clic', icon: Wrench, color: 'text-sky-400', activeBg: 'from-sky-600 to-blue-600', badge: 0 },
+    { id: 'machines', label: 'Machines', sub: 'Parc & Îlots', icon: Cog, color: 'text-cyan-400', activeBg: 'from-cyan-600 to-sky-600', badge: noMatSlotsBadge },
+    { id: 'stocks', label: 'Stocks', sub: 'Matières & Vente', icon: Package, color: 'text-amber-400', activeBg: 'from-amber-600 to-orange-600', badge: readyToSellBadge },
+    { id: 'metrology', label: 'Métrologie', sub: 'Contrôle & ISO', icon: Gauge, color: 'text-emerald-400', activeBg: 'from-emerald-600 to-teal-600', badge: uninspectedPartsBadge },
+    { id: 'contracts', label: 'Contrats', sub: 'Appels d’offres', icon: FileSpreadsheet, color: 'text-indigo-400', activeBg: 'from-indigo-600 to-blue-600', badge: 0 },
+    { id: 'gacha', label: 'Cartes RH', sub: 'Coffres & Équipe', icon: Gift, color: 'text-pink-400', activeBg: 'from-pink-600 to-rose-600', badge: 0 },
+    { id: 'atelier', label: 'Locaux', sub: 'Sols & 24 îlots', icon: Building2, color: 'text-violet-400', activeBg: 'from-violet-600 to-purple-600', badge: 0 },
+    { id: 'leaderboard', label: 'Classement', sub: 'Top & Compte', icon: Trophy, color: 'text-yellow-400', activeBg: 'from-amber-500 to-yellow-600', badge: 0 }
   ];
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col pb-20 md:pb-6">
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col pb-20 md:pb-4">
       <style>{`
-        @keyframes cardPopIn {
-          0% { opacity: 0; transform: scale(0.45) rotateY(90deg) translateY(30px); }
-          65% { opacity: 1; transform: scale(1.05) rotateY(-8deg) translateY(-4px); }
-          100% { opacity: 1; transform: scale(1) rotateY(0deg) translateY(0); }
-        }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         @keyframes crateShake {
           0%, 100% { transform: rotate(0deg) scale(1); }
           20% { transform: rotate(-6deg) scale(1.06); }
           40% { transform: rotate(6deg) scale(1.08); }
-          60% { transform: rotate(-4deg) scale(1.06); }
-          80% { transform: rotate(4deg) scale(1.04); }
+          60% { transform: rotate(-5deg) scale(1.06); }
+          80% { transform: rotate(5deg) scale(1.08); }
         }
-        .animate-card-reveal { animation: cardPopIn 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+        @keyframes cardPopIn {
+          0% { opacity: 0; transform: scale(0.45) rotateY(75deg) translateY(25px); }
+          65% { opacity: 1; transform: scale(1.04) rotateY(-6deg) translateY(-4px); }
+          100% { opacity: 1; transform: scale(1) rotateY(0deg) translateY(0); }
+        }
         .animate-crate-shake { animation: crateShake 0.45s ease-in-out infinite; }
+        .animate-card-reveal { animation: cardPopIn 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
       `}</style>
 
-      <div className="fixed top-16 right-3 z-50 space-y-2 pointer-events-none max-w-[90vw]">
+      {/* NOTIFICATIONS FLOTTANTES */}
+      <div className="fixed bottom-20 md:bottom-4 right-3 sm:right-4 z-50 space-y-2 pointer-events-none max-w-[90vw]">
         {toasts.map(t => (
           <div
             key={t.id}
-            className={`px-3.5 py-2 rounded-xl border text-xs font-black shadow-xl ${
+            className={`px-3.5 py-2 rounded-xl text-xs font-black shadow-xl border backdrop-blur ${
               t.type === 'error'
                 ? 'bg-rose-950/95 border-rose-500 text-rose-200'
                 : t.type === 'success'
@@ -3264,6 +3272,234 @@ export default function App() {
           </div>
         ))}
       </div>
+
+      {/* MODALE DE SÉLECTION DE CARTE OPÉRATEUR */}
+      {assignModalSlotIdx !== null && (() => {
+        const targetSlot = slots[assignModalSlotIdx];
+        const targetMachine = targetSlot ? MACHINES_CATALOG.find(m => m.id === targetSlot.machineId) : null;
+        if (!targetSlot || !targetMachine) return null;
+
+        const computeEffectiveSpeedPct = (emp) => {
+          const owned = inventory[emp.id];
+          const starBoost = 1 + ((owned?.stars || 1) - 1) * 0.28;
+          const specBoost = emp.specialty === targetMachine.id ? 1.4 : 1.0;
+          return Math.round(emp.baseMult * starBoost * specBoost * 100);
+        };
+
+        const candidateCards = EMPLOYEES_CATALOG
+          .filter(emp => {
+            const owned = inventory[emp.id];
+            if (!owned || owned.count <= 0) return false;
+            if (assignFilterRarity !== 'all' && emp.rarity !== assignFilterRarity) return false;
+            if (assignOnlySpecialty && emp.specialty !== targetMachine.id && emp.specialty !== 'all') return false;
+            if (assignOnlyAvailable) {
+              const busySlot = slots.findIndex((s, i) => i !== assignModalSlotIdx && s.employeeId === emp.id);
+              if (busySlot !== -1) return false;
+            }
+            return true;
+          })
+          .sort((a, b) => {
+            if (assignSortBy === 'effective_desc') return computeEffectiveSpeedPct(b) - computeEffectiveSpeedPct(a);
+            if (assignSortBy === 'rarity_desc') return RARITY_ORDER[b.rarity] - RARITY_ORDER[a.rarity];
+            if (assignSortBy === 'stars') return (inventory[b.id]?.stars || 1) - (inventory[a.id]?.stars || 1);
+            if (assignSortBy === 'quality') return b.qualBonus - a.qualBonus;
+            return a.name.localeCompare(b.name);
+          });
+
+        return (
+          <div
+            onClick={() => setAssignModalSlotIdx(null)}
+            className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4"
+          >
+            <div
+              onClick={e => e.stopPropagation()}
+              className="max-w-4xl w-full max-h-[88vh] bg-slate-900 border border-slate-700 rounded-3xl shadow-2xl flex flex-col overflow-hidden"
+            >
+              <div className="p-4 border-b border-slate-800 flex items-center justify-between gap-3 bg-slate-950/60">
+                <div>
+                  <span className="text-[10px] font-black uppercase text-sky-400">Affectation Îlot #{assignModalSlotIdx + 1}</span>
+                  <h3 className="text-base font-black text-white flex items-center gap-2">
+                    {targetMachine.name}
+                    <span className="text-xs font-bold text-slate-400">• Choisissez une carte opérateur</span>
+                  </h3>
+                </div>
+                <div className="flex items-center gap-2">
+                  {targetSlot.employeeId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSlots(prev => prev.map((s, i) => (i === assignModalSlotIdx ? { ...s, employeeId: null } : s)));
+                        setAssignModalSlotIdx(null);
+                        addToast(`Opérateur retiré de l'îlot #${assignModalSlotIdx + 1}.`, 'info');
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-rose-950/70 hover:bg-rose-900/80 border border-rose-700/60 text-rose-200 text-xs font-black"
+                    >
+                      Retirer le poste
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setAssignModalSlotIdx(null)}
+                    className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-3 border-b border-slate-800 bg-slate-900/90 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap gap-1">
+                    {[
+                      { id: 'all', label: 'Toutes' },
+                      { id: 'secret', label: 'Secret' },
+                      { id: 'mythique', label: 'Mythique' },
+                      { id: 'legendaire', label: 'Légendaire' },
+                      { id: 'epique', label: 'Épique' },
+                      { id: 'rare', label: 'Rare' },
+                      { id: 'commun', label: 'Commun' },
+                      { id: 'malus', label: 'Malus' }
+                    ].map(f => (
+                      <button
+                        key={f.id}
+                        type="button"
+                        onClick={() => setAssignFilterRarity(f.id)}
+                        className={`px-2 py-1 rounded-lg text-[11px] font-bold border ${
+                          assignFilterRarity === f.id ? 'bg-sky-600 border-sky-400 text-white' : 'bg-slate-950 border-slate-800 text-slate-400'
+                        }`}
+                      >
+                        {f.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setAssignOnlySpecialty(v => !v)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border ${
+                        assignOnlySpecialty ? 'bg-amber-600 border-amber-400 text-white' : 'bg-slate-950 border-slate-800 text-slate-400'
+                      }`}
+                    >
+                      Spécialité machine
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAssignOnlyAvailable(v => !v)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border ${
+                        assignOnlyAvailable ? 'bg-emerald-600 border-emerald-400 text-white' : 'bg-slate-950 border-slate-800 text-slate-400'
+                      }`}
+                    >
+                      Libres uniquement
+                    </button>
+                    <select
+                      value={assignSortBy}
+                      onChange={e => setAssignSortBy(e.target.value)}
+                      className="bg-slate-950 border border-slate-800 text-slate-200 text-xs rounded-lg px-2.5 py-1 font-bold"
+                    >
+                      <option value="effective_desc">Bonus Machine ↓</option>
+                      <option value="rarity_desc">Rareté ↓</option>
+                      <option value="stars">Étoiles ★</option>
+                      <option value="quality">Qualité +</option>
+                      <option value="name">Nom A→Z</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-4 overflow-y-auto flex-1">
+                {candidateCards.length === 0 ? (
+                  <div className="text-center py-10 text-xs text-slate-400">
+                    Aucune carte disponible avec ces filtres. Recrutez des opérateurs dans l’onglet <b className="text-pink-400">Cartes RH</b> !
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {candidateCards.map(emp => {
+                      const owned = inventory[emp.id] || { count: 1, stars: 1 };
+                      const rar = RARITY_CONFIG[emp.rarity] || RARITY_CONFIG.commun;
+                      const isHere = targetSlot.employeeId === emp.id;
+                      const otherSlotIdx = slots.findIndex((s, i) => i !== assignModalSlotIdx && s.employeeId === emp.id);
+                      const isSpecialtyMatch = emp.specialty === targetMachine.id;
+                      const effPct = computeEffectiveSpeedPct(emp);
+
+                      return (
+                        <div
+                          key={emp.id}
+                          onClick={() => {
+                            setSlots(prev =>
+                              prev.map((s, i) => {
+                                if (i === assignModalSlotIdx) return { ...s, employeeId: emp.id };
+                                if (s.employeeId === emp.id) return { ...s, employeeId: null };
+                                return s;
+                              })
+                            );
+                            setAssignModalSlotIdx(null);
+                            addToast(`${emp.name} affecté sur l'îlot #${assignModalSlotIdx + 1} !`, 'success');
+                          }}
+                          className={`cursor-pointer rounded-2xl border-2 p-3 flex flex-col justify-between transition-all hover:scale-[1.01] bg-slate-950/95 ${
+                            isHere ? 'ring-2 ring-sky-400 border-sky-400' : rar.border
+                          }`}
+                        >
+                          <div>
+                            <div className="flex items-center justify-between gap-1 mb-2">
+                              <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full border ${rar.badge}`}>
+                                {rar.label}
+                              </span>
+                              {isHere ? (
+                                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-sky-600 text-white">En poste ici</span>
+                              ) : otherSlotIdx !== -1 ? (
+                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-950 text-amber-300 border border-amber-700/60">
+                                  Îlot #{otherSlotIdx + 1}
+                                </span>
+                              ) : (
+                                <span className="text-[10px] font-bold text-emerald-400">Disponible</span>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-2.5 my-1.5">
+                              <CharacterPortrait emp={emp} sizeClass="w-12 h-12" />
+                              <div className="min-w-0">
+                                <div className="text-sm font-black text-white truncate">{emp.name}</div>
+                                <div className="text-[11px] text-amber-400 font-bold">
+                                  {'★'.repeat(owned.stars || 1)}{'☆'.repeat(Math.max(0, 5 - (owned.stars || 1)))}
+                                </div>
+                                <div className="text-[10px] text-slate-400 truncate">{emp.role}</div>
+                              </div>
+                            </div>
+
+                            <div className="bg-slate-900/90 rounded-xl p-2 text-[11px] space-y-1 border border-slate-800 mt-2">
+                              <div className="flex justify-between">
+                                <span className="text-slate-400">Cadence sur cette machine :</span>
+                                <span className={`font-black ${effPct >= 0 ? 'text-emerald-400' : 'text-lime-400'}`}>
+                                  {effPct >= 0 ? `+${effPct}%` : `${effPct}%`}
+                                </span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-slate-400">Qualité :</span>
+                                <span className="text-sky-300 font-black">{emp.qualBonus >= 0 ? `+${emp.qualBonus}` : emp.qualBonus}</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-slate-400">Spécialité :</span>
+                                <span className={`font-bold ${isSpecialtyMatch ? 'text-amber-300' : 'text-slate-300'}`}>
+                                  {emp.specialtyLabel} {isSpecialtyMatch ? '(x1.4)' : ''}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="mt-2.5 w-full py-1.5 rounded-xl bg-sky-600/20 hover:bg-sky-600 text-sky-200 hover:text-white border border-sky-500/40 text-center text-xs font-black transition-colors">
+                            {isHere ? 'Déjà affecté' : otherSlotIdx !== -1 ? `Transférer depuis l'îlot #${otherSlotIdx + 1}` : 'Affecter à cette machine'}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* MODALE ANIMÉE D'OUVERTURE DE COFFRE & APPARITION DE CARTE */}
       {(isOpeningCrate || (showCrateRevealModal && lastCrateDrop)) && (
