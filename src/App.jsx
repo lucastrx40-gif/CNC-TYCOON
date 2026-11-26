@@ -397,15 +397,15 @@ const rollSingleEmployee = () => {
 
 // Formate les montants en $ lisibles (k, M, Md, T)
 const formatMoney = (val) => {
-  if (val == null || isNaN(val) || val <= 0) return '0 $';
-  if (val < 10) return `${val.toFixed(2)} $`;
-  if (val < 100) return `${val.toFixed(1)} $`;
-  if (val < 1000) return `${Math.floor(val)} $`;
+  if (val == null || isNaN(val) || !isFinite(val) || val <= 0) return '0 $';
+  const num = Number(val);
+  if (num < 10) return `${num.toFixed(2)} $`;
+  if (num < 100) return `${num.toFixed(1)} $`;
+  if (num < 1000) return `${Math.floor(num)} $`;
   const units = ['', 'k', 'M', 'Md', 'T'];
-  const tier = Math.floor(Math.log10(Math.abs(val)) / 3);
-  if (tier <= 0) return `${Math.floor(val)} $`;
-  const safeTier = Math.min(tier, 4);
-  return `${(val / Math.pow(10, safeTier * 3)).toFixed(2)} ${units[safeTier]}$`;
+  const tier = Math.min(Math.floor(Math.log10(Math.abs(num)) / 3), 4);
+  const scaled = num / Math.pow(10, tier * 3);
+  return `${scaled.toFixed(2)} ${units[tier]}$`;
 };
 
 const cleanId = (str) => (str || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_');
@@ -1107,6 +1107,8 @@ export default function App() {
   const [password, setPassword] = useState(() => localStorage.getItem('cnc_password') || '');
   const [isLoggedIn, setIsLoggedIn] = useState(() => !!localStorage.getItem('cnc_pseudo'));
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authMode, setAuthMode] = useState('login'); // 'login' | 'register'
+  const [isSyncingAuth, setIsSyncingAuth] = useState(false);
 
   // Progression principale
   const [money, setMoney] = useState(() => initialSave.data?.money ?? 0);
@@ -1278,40 +1280,61 @@ export default function App() {
       const savedPseudo = localStorage.getItem('cnc_pseudo');
       const savedPass = localStorage.getItem('cnc_password');
       if (db && savedPseudo && savedPass) {
+        setIsSyncingAuth(true);
         try {
           const snap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', cleanId(savedPseudo)));
           if (snap.exists()) {
             const data = snap.data();
             if (!data.password || data.password === savedPass) {
-              const candidate = {
-                money: data.money !== undefined ? Math.max(0, Number(data.money) || 0) : 0,
-                clickLevel: Math.max(1, Number(data.clickLevel) || 1),
-                slots: normalizeSlotsArray(data.slots),
-                inventory: Array.isArray(data.inventory) ? data.inventory : [],
-                atelier: {
-                  sizeLevel: 1,
-                  floor: 'beton',
-                  crane: false,
-                  agv: false,
-                  cobots: false,
-                  twin_ai: false,
-                  ...(data.atelier || {})
-                },
-                claimedChallenges: Array.isArray(data.claimedChallenges) ? data.claimedChallenges : []
+              const loadedMoney = data.money !== undefined ? Math.max(0, Number(data.money) || 0) : 0;
+              const loadedClick = Math.max(1, Number(data.clickLevel) || 1);
+              const loadedSlots = normalizeSlotsArray(data.slots);
+              const loadedInv = Array.isArray(data.inventory) ? data.inventory : [];
+              const loadedAtelier = {
+                sizeLevel: 1,
+                floor: 'beton',
+                crane: false,
+                agv: false,
+                cobots: false,
+                twin_ai: false,
+                ...(data.atelier || {})
               };
-              if (!data.sig || data.sig === computeIntegrityHash(candidate)) {
-                setMoney(candidate.money);
-                setClickLevel(candidate.clickLevel);
-                setSlots(candidate.slots);
-                setInventory(candidate.inventory);
-                setAtelier(candidate.atelier);
-                setClaimedChallenges(candidate.claimedChallenges);
+              const loadedChallenges = Array.isArray(data.claimedChallenges) ? data.claimedChallenges : [];
+
+              const candidate = {
+                money: loadedMoney,
+                clickLevel: loadedClick,
+                slots: loadedSlots,
+                inventory: loadedInv,
+                atelier: loadedAtelier,
+                claimedChallenges: loadedChallenges
+              };
+
+              // Ne restaure depuis le Cloud que si le Cloud est au moins aussi avancé que le local
+              const localMoney = Number(latestStateRef.current.money) || 0;
+              const localInvLen = Array.isArray(latestStateRef.current.inventory) ? latestStateRef.current.inventory.length : 0;
+              const cloudHasMoreOrEqual =
+                loadedMoney >= localMoney || loadedInvLen > localInvLen || loadedClick > (latestStateRef.current.clickLevel || 1);
+
+              if (cloudHasMoreOrEqual) {
+                setMoney(loadedMoney);
+                setClickLevel(loadedClick);
+                setSlots(loadedSlots);
+                setInventory(loadedInv);
+                setAtelier(loadedAtelier);
+                setClaimedChallenges(loadedChallenges);
+                localStorage.setItem(
+                  SIGNED_SAVE_KEY,
+                  JSON.stringify({ data: candidate, sig: computeIntegrityHash(candidate), savedAt: Date.now() })
+                );
               }
               setIsLoggedIn(true);
             }
           }
         } catch (err) {
           console.warn('Restauration auto Cloud :', err);
+        } finally {
+          setIsSyncingAuth(false);
         }
       }
     })();
@@ -1410,7 +1433,7 @@ export default function App() {
 
   // Synchronisation Cloud (compte + classement)
   const syncCloudData = async (silent = true, overrideState = null) => {
-    if (!db) return;
+    if (!db || isSyncingAuth) return;
     const st = overrideState || latestStateRef.current;
     const pid = cleanId(st.pseudo);
     if (!pid || !st.isLoggedIn) {
@@ -1479,15 +1502,22 @@ export default function App() {
       return;
     }
 
+    setIsSyncingAuth(true);
     try {
       const accountRef = doc(db, 'artifacts', appId, 'public', 'data', 'accounts', pid);
       const snap = await getDoc(accountRef);
-      if (snap.exists()) {
+
+      if (authMode === 'login') {
+        if (!snap.exists()) {
+          showToast(`❌ Aucun compte trouvé pour "${trimmedPseudo}". Vérifiez l'orthographe ou créez-le !`);
+          return;
+        }
         const data = snap.data();
         if (data.password && data.password !== password) {
           showToast('❌ Mot de passe incorrect pour ce pseudo !');
           return;
         }
+
         const loadedMoney = data.money !== undefined ? Math.max(0, Number(data.money) || 0) : 0;
         const loadedClick = Math.max(1, Number(data.clickLevel) || 1);
         const loadedSlots = normalizeSlotsArray(data.slots);
@@ -1503,7 +1533,7 @@ export default function App() {
         };
         const loadedChallenges = Array.isArray(data.claimedChallenges) ? data.claimedChallenges : [];
 
-        const candidate = {
+        const restoredState = {
           money: loadedMoney,
           clickLevel: loadedClick,
           slots: loadedSlots,
@@ -1511,10 +1541,6 @@ export default function App() {
           atelier: loadedAtelier,
           claimedChallenges: loadedChallenges
         };
-        if (data.sig && data.sig !== computeIntegrityHash(candidate)) {
-          showToast('🛡️ Sauvegarde Cloud corrompue ou falsifiée.');
-          return;
-        }
 
         setMoney(loadedMoney);
         setClickLevel(loadedClick);
@@ -1527,17 +1553,24 @@ export default function App() {
         localStorage.setItem('cnc_password', password);
         localStorage.setItem(
           SIGNED_SAVE_KEY,
-          JSON.stringify({ data: candidate, sig: computeIntegrityHash(candidate), savedAt: Date.now() })
+          JSON.stringify({ data: restoredState, sig: computeIntegrityHash(restoredState), savedAt: Date.now() })
         );
 
         setIsLoggedIn(true);
         setShowAuthModal(false);
-        showToast(`🎉 Partie chargée ! Bon retour, ${trimmedPseudo} !`);
+        showToast(`🎉 Partie chargée (${formatMoney(loadedMoney)}) ! Bon retour, ${trimmedPseudo} !`);
       } else {
+        // Création d'un nouveau compte Cloud
+        if (snap.exists()) {
+          showToast(`⚠️ Le pseudo "${trimmedPseudo}" existe déjà ! Utilisez "Charger un compte".`);
+          setAuthMode('login');
+          return;
+        }
         localStorage.setItem('cnc_pseudo', trimmedPseudo);
         localStorage.setItem('cnc_password', password);
         setIsLoggedIn(true);
         setShowAuthModal(false);
+        setIsSyncingAuth(false);
         await syncCloudData(true, {
           pseudo: trimmedPseudo,
           password,
@@ -1550,27 +1583,25 @@ export default function App() {
           currentSize,
           isLoggedIn: true
         });
-        showToast(`🚀 Nouvel atelier enregistré pour ${trimmedPseudo} !`);
+        showToast(`🚀 Nouveau compte créé et sauvegardé pour ${trimmedPseudo} !`);
       }
     } catch (err) {
       console.warn('Erreur login Firebase :', err);
       if (err.code === 'permission-denied') setCloudStatus('permission_error');
-      localStorage.setItem('cnc_pseudo', trimmedPseudo);
-      localStorage.setItem('cnc_password', password);
-      setIsLoggedIn(true);
-      setShowAuthModal(false);
-      showToast('💾 Compte activé en sauvegarde locale');
+      showToast('⚠️ Erreur réseau lors de la connexion au serveur.');
+    } finally {
+      setIsSyncingAuth(false);
     }
   };
 
-  // Auto-sync Cloud toutes les 8 secondes uniquement quand connecté et modale fermée
+  // Auto-sync Cloud toutes les 8 secondes uniquement quand connecté et hors chargement
   useEffect(() => {
-    if (!isLoggedIn || showAuthModal || !pseudo.trim()) return;
+    if (!isLoggedIn || showAuthModal || isSyncingAuth || !pseudo.trim()) return;
     const timer = setInterval(() => {
       syncCloudData(true);
     }, 8000);
     return () => clearInterval(timer);
-  }, [isLoggedIn, showAuthModal, pseudo]);
+  }, [isLoggedIn, showAuthModal, isSyncingAuth, pseudo]);
 
   // Actions Usinage & Atelier
   const handleManualClick = (e) => {
@@ -3256,8 +3287,32 @@ export default function App() {
                   Fermer ✕
                 </button>
               </div>
+
+              <div className="grid grid-cols-2 gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setAuthMode('login')}
+                  className={`py-2 rounded-lg text-xs font-black transition ${
+                    authMode === 'login' ? 'bg-cyan-500 text-slate-950' : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Charger un compte
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAuthMode('register')}
+                  className={`py-2 rounded-lg text-xs font-black transition ${
+                    authMode === 'register' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Créer un compte
+                </button>
+              </div>
+
               <p className="text-xs text-slate-400">
-                Entrez votre <b>Pseudo</b> et un <b>Mot de passe</b> pour sauvegarder votre progression dans le Cloud et apparaître dans le Classement Général.
+                {authMode === 'login'
+                  ? 'Récupérez votre partie sauvegardée depuis un autre appareil (PC ou téléphone) sans risque d’écrasement.'
+                  : 'Enregistrez votre partie actuelle dans le Cloud avec un nouveau Pseudo et un Mot de passe.'}
               </p>
               <div>
                 <label className="text-xs font-bold text-slate-300 block mb-1">Pseudo de l&apos;Atelier</label>
@@ -3283,12 +3338,21 @@ export default function App() {
               </div>
               <button
                 type="submit"
-                className="w-full py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-black shadow-lg hover:opacity-95 transition"
+                disabled={isSyncingAuth}
+                className={`w-full py-3 rounded-xl font-black shadow-lg hover:opacity-95 transition ${
+                  authMode === 'login'
+                    ? 'bg-gradient-to-r from-cyan-500 to-blue-600 text-white'
+                    : 'bg-gradient-to-r from-emerald-500 to-teal-600 text-slate-950'
+                }`}
               >
-                Charger / Créer ma Sauvegarde
+                {isSyncingAuth
+                  ? 'Synchronisation en cours...'
+                  : authMode === 'login'
+                  ? 'Charger ma partie Cloud'
+                  : 'Créer et sauvegarder mon compte'}
               </button>
               <div className="pt-3 border-t border-slate-800 flex items-center justify-between">
-                <span className="text-[11px] text-slate-400">Tester le nouvel équilibrage dès 0 $ :</span>
+                <span className="text-[11px] text-slate-400">Recommencer une partie neuve :</span>
                 <button
                   type="button"
                   onClick={handleResetGame}
