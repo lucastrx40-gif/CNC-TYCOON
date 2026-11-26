@@ -1,18 +1,17 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Wrench, Cog, Package, Gauge, FileSpreadsheet, Cpu, Gift, Trophy,
-  Building2, HelpCircle, X, ShieldCheck, AlertTriangle, CheckCircle2,
-  Play, Pause, Trash2, Sparkles, Lock, Award, Lightbulb, Users,
-  TrendingUp, Layers, RefreshCw, LogOut, Sliders
+  Building2, HelpCircle, X, Trash2, Lock, Award, Lightbulb,
+  Layers, RefreshCw, LogOut, Save, Download, Upload
 } from 'lucide-react';
 import { initializeApp, getApps } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import {
-  getFirestore, doc, getDoc, setDoc, collection, getDocs, query, limit
+  getFirestore, doc, setDoc, getDoc, collection, getDocs, query, limit
 } from 'firebase/firestore';
 
 // ============================================================================
-// 1. CONFIGURATION FIREBASE & SÉCURITÉ ANTI-TRICHE
+// 1. CONFIGURATION FIREBASE & SÉCURITÉ ANTI-TRICHE / SAUVEGARDE ROBUSTE
 // ============================================================================
 const firebaseConfig = {
   apiKey: "AIzaSyDemoKeyReplaceWithYourOwn",
@@ -34,8 +33,9 @@ try {
 }
 
 const SEASON_APP_ID = 'cnc-empire-s2';
-const SAVE_STORAGE_KEY = 'cnc_gmp_save_s2_v1';
-const LEGACY_KEYS = ['cnc_save_v6', 'cnc_save_v2', 'cnc_money', 'cnc_slots', 'cnc_inventory', 'cnc_atelier'];
+const SAVE_STORAGE_KEY = 'cnc_gmp_save_s2_v2';
+const SAVE_BACKUP_KEY = 'cnc_gmp_save_s2_backup';
+const LEGACY_KEYS = ['cnc_gmp_save_s2_v1', 'cnc_save_v6', 'cnc_save_v2', 'cnc_money', 'cnc_slots', 'cnc_inventory', 'cnc_atelier'];
 const SECURITY_SALT = 'GMP_CNC_TYCOON_S2_9841_SEC';
 
 function computeIntegrityHash(payloadStr) {
@@ -76,16 +76,32 @@ function decodeSecureSave(raw) {
   }
 }
 
+function loadBestLocalSave(targetPseudo = '') {
+  const cleanTarget = targetPseudo.trim().toLowerCase();
+  const candidates = [
+    decodeSecureSave(localStorage.getItem(SAVE_STORAGE_KEY)),
+    decodeSecureSave(localStorage.getItem(SAVE_BACKUP_KEY)),
+    cleanTarget ? decodeSecureSave(localStorage.getItem(`${SAVE_STORAGE_KEY}_${cleanTarget}`)) : null
+  ].filter(Boolean);
+
+  if (candidates.length === 0) return null;
+  const matchingUser = cleanTarget
+    ? candidates.filter(c => !c.pseudo || c.pseudo.trim().toLowerCase() === cleanTarget)
+    : candidates;
+  const pool = matchingUser.length > 0 ? matchingUser : candidates;
+  return pool.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+}
+
 // ============================================================================
-// 2. CATALOGUES INDUSTRIELS (MATÉRIAUX, PIÈCES, MACHINES, R&D, RH, LOCAUX)
+// 2. CATALOGUES INDUSTRIELS (ÉQUILIBRAGE LONGUE DURÉE)
 // ============================================================================
 const MATERIALS_CATALOG = [
-  { id: 'alu_6061', name: 'Aluminium 6061', costPerKg: 6.5, density: 2.7, diff: 1.0, reqTech: 'mat_base', color: '#38bdf8' },
-  { id: 'steel_c45', name: 'Acier C45', costPerKg: 9.0, density: 7.85, diff: 1.15, reqTech: 'mat_base', color: '#94a3b8' },
-  { id: 'brass_cw614', name: 'Laiton CuZn39Pb3', costPerKg: 14.5, density: 8.4, diff: 1.05, reqTech: 'mat_inox', color: '#fbbf24' },
-  { id: 'inox_316l', name: 'Inox 316L', costPerKg: 21.0, density: 8.0, diff: 1.35, reqTech: 'mat_inox', color: '#cbd5e1' },
-  { id: 'peek_hp', name: 'Polymère PEEK', costPerKg: 34.0, density: 1.32, diff: 1.25, reqTech: 'mat_peek', color: '#d97706' },
-  { id: 'ti_6al4v', name: 'Titane TA6V', costPerKg: 68.0, density: 4.43, diff: 1.65, reqTech: 'mat_titanium', color: '#a78bfa' }
+  { id: 'alu_6061', name: 'Aluminium 6061', costPerKg: 7.5, density: 2.7, diff: 1.0, reqTech: 'mat_base', color: '#38bdf8' },
+  { id: 'steel_c45', name: 'Acier C45', costPerKg: 10.5, density: 7.85, diff: 1.15, reqTech: 'mat_base', color: '#94a3b8' },
+  { id: 'brass_cw614', name: 'Laiton CuZn39Pb3', costPerKg: 17.0, density: 8.4, diff: 1.05, reqTech: 'mat_inox', color: '#fbbf24' },
+  { id: 'inox_316l', name: 'Inox 316L', costPerKg: 24.5, density: 8.0, diff: 1.35, reqTech: 'mat_inox', color: '#cbd5e1' },
+  { id: 'peek_hp', name: 'Polymère PEEK', costPerKg: 42.0, density: 1.32, diff: 1.25, reqTech: 'mat_peek', color: '#d97706' },
+  { id: 'ti_6al4v', name: 'Titane TA6V', costPerKg: 82.0, density: 4.43, diff: 1.65, reqTech: 'mat_titanium', color: '#a78bfa' }
 ];
 
 const PARTS_CATALOG = [
@@ -94,8 +110,8 @@ const PARTS_CATALOG = [
     name: 'Entretoise Cylindrique',
     materialId: 'alu_6061',
     kgPerPart: 0.25,
-    baseCycleSec: 4.5,
-    sellPrice: 7.5,
+    baseCycleSec: 8.5,
+    sellPrice: 3.2,
     reqTech: null,
     allowedMachines: ['drill_saw', 'manual_lathe', 'cnc_mill_3x', 'bi_spindle', 'cnc_5axis', 'edm_cell', 'slm_laser'],
     desc: 'Pièce de base tournée et percée en série.'
@@ -105,8 +121,8 @@ const PARTS_CATALOG = [
     name: 'Axe de Transmission',
     materialId: 'steel_c45',
     kgPerPart: 0.65,
-    baseCycleSec: 7.5,
-    sellPrice: 17.5,
+    baseCycleSec: 14.0,
+    sellPrice: 8.5,
     reqTech: null,
     allowedMachines: ['manual_lathe', 'bi_spindle', 'cnc_5axis'],
     desc: 'Arbre épaulé rectifié pour boîtes mécaniques.'
@@ -116,8 +132,8 @@ const PARTS_CATALOG = [
     name: 'Bague de Guidage Laiton',
     materialId: 'brass_cw614',
     kgPerPart: 0.35,
-    baseCycleSec: 6.5,
-    sellPrice: 24.0,
+    baseCycleSec: 12.5,
+    sellPrice: 11.5,
     reqTech: 'mat_inox',
     allowedMachines: ['manual_lathe', 'bi_spindle', 'cnc_5axis'],
     desc: 'Palier antifriction haute précision.'
@@ -127,8 +143,8 @@ const PARTS_CATALOG = [
     name: 'Support Fraisé 3 Axes',
     materialId: 'inox_316l',
     kgPerPart: 0.85,
-    baseCycleSec: 11.0,
-    sellPrice: 44.0,
+    baseCycleSec: 21.0,
+    sellPrice: 24.0,
     reqTech: 'prod_cnc3',
     allowedMachines: ['cnc_mill_3x', 'cnc_5axis', 'edm_cell'],
     desc: 'Équerre structurelle en Inox 316L.'
@@ -138,8 +154,8 @@ const PARTS_CATALOG = [
     name: 'Isolateur PEEK Haute Temp.',
     materialId: 'peek_hp',
     kgPerPart: 0.20,
-    baseCycleSec: 9.5,
-    sellPrice: 58.0,
+    baseCycleSec: 18.0,
+    sellPrice: 31.0,
     reqTech: 'mat_peek',
     allowedMachines: ['cnc_mill_3x', 'bi_spindle', 'cnc_5axis', 'edm_cell'],
     desc: 'Composant diélectrique pour environnement sévère.'
@@ -149,8 +165,8 @@ const PARTS_CATALOG = [
     name: 'Engrenage Hélicoïdal UGV',
     materialId: 'steel_c45',
     kgPerPart: 1.15,
-    baseCycleSec: 15.0,
-    sellPrice: 96.0,
+    baseCycleSec: 28.0,
+    sellPrice: 54.0,
     reqTech: 'prod_5axis',
     allowedMachines: ['cnc_5axis', 'edm_cell', 'slm_laser'],
     desc: 'Pignon taillé 5 axes à denture hélicoïdale.'
@@ -160,8 +176,8 @@ const PARTS_CATALOG = [
     name: 'Carter Aéronautique TA6V',
     materialId: 'ti_6al4v',
     kgPerPart: 1.45,
-    baseCycleSec: 21.0,
-    sellPrice: 175.0,
+    baseCycleSec: 39.0,
+    sellPrice: 125.0,
     reqTech: 'mat_titanium',
     allowedMachines: ['cnc_5axis', 'edm_cell', 'slm_laser'],
     desc: 'Carcasse monobloc allégée en Titane aéronautique.'
@@ -171,8 +187,8 @@ const PARTS_CATALOG = [
     name: 'Tuyère Spatielle Inconel/Ti',
     materialId: 'ti_6al4v',
     kgPerPart: 1.80,
-    baseCycleSec: 26.0,
-    sellPrice: 285.0,
+    baseCycleSec: 52.0,
+    sellPrice: 210.0,
     reqTech: 'prod_slm',
     allowedMachines: ['slm_laser'],
     desc: 'Chambre à canaux régénératifs imprimée par fusion laser.'
@@ -184,12 +200,12 @@ const MACHINES_CATALOG = [
     id: 'drill_saw',
     name: 'Perceuse à Colonne & Scie',
     category: 'Conventionnel',
-    baseCost: 90,
-    costMult: 1.34,
+    baseCost: 110,
+    costMult: 1.42,
     speedMult: 1.0,
     batchSize: 1,
-    baseQuality: 74,
-    basePrecision: 72,
+    baseQuality: 72,
+    basePrecision: 70,
     reqTech: null,
     defaultPart: 'spacer_alu',
     desc: 'Poste d’ébauche robuste pour entretoises simples.'
@@ -198,12 +214,12 @@ const MACHINES_CATALOG = [
     id: 'manual_lathe',
     name: 'Tour Conventionnel',
     category: 'Tournage',
-    baseCost: 340,
-    costMult: 1.34,
-    speedMult: 1.25,
+    baseCost: 520,
+    costMult: 1.42,
+    speedMult: 1.15,
     batchSize: 1,
-    baseQuality: 80,
-    basePrecision: 79,
+    baseQuality: 78,
+    basePrecision: 77,
     reqTech: null,
     defaultPart: 'shaft_steel',
     desc: 'Tournage parallèle de précision pour axes et bagues.'
@@ -212,12 +228,12 @@ const MACHINES_CATALOG = [
     id: 'cnc_mill_3x',
     name: 'Fraiseuse CNC 3 Axes',
     category: 'Fraisage CN',
-    baseCost: 1450,
-    costMult: 1.34,
-    speedMult: 1.55,
+    baseCost: 2600,
+    costMult: 1.42,
+    speedMult: 1.35,
     batchSize: 1,
-    baseQuality: 86,
-    basePrecision: 85,
+    baseQuality: 85,
+    basePrecision: 84,
     reqTech: 'prod_cnc3',
     defaultPart: 'bracket_cnc',
     desc: 'Centre vertical programmable pour pièces prismatiques.'
@@ -226,12 +242,12 @@ const MACHINES_CATALOG = [
     id: 'bi_spindle',
     name: 'Tour CNC Bi-Broche',
     category: 'Tournage UGV',
-    baseCost: 6800,
-    costMult: 1.34,
-    speedMult: 2.15,
+    baseCost: 13500,
+    costMult: 1.42,
+    speedMult: 1.65,
     batchSize: 2,
-    baseQuality: 90,
-    basePrecision: 89,
+    baseQuality: 89,
+    basePrecision: 88,
     reqTech: 'prod_bi',
     defaultPart: 'bushing_brass',
     desc: 'Double broche synchronisée produisant 2 pièces par cycle.'
@@ -240,12 +256,12 @@ const MACHINES_CATALOG = [
     id: 'cnc_5axis',
     name: 'Centre 5 Axes UGV',
     category: 'Haute Précision',
-    baseCost: 29000,
-    costMult: 1.34,
-    speedMult: 2.65,
+    baseCost: 64000,
+    costMult: 1.42,
+    speedMult: 2.0,
     batchSize: 2,
-    baseQuality: 94,
-    basePrecision: 94,
+    baseQuality: 93,
+    basePrecision: 93,
     reqTech: 'prod_5axis',
     defaultPart: 'gear_helical',
     desc: 'Usinage continu 5 axes pour géométries complexes.'
@@ -254,9 +270,9 @@ const MACHINES_CATALOG = [
     id: 'edm_cell',
     name: 'Cellule Électroérosion EDM',
     category: 'Micro-Usinage',
-    baseCost: 125000,
-    costMult: 1.34,
-    speedMult: 3.10,
+    baseCost: 295000,
+    costMult: 1.42,
+    speedMult: 2.35,
     batchSize: 3,
     baseQuality: 97,
     basePrecision: 98,
@@ -268,9 +284,9 @@ const MACHINES_CATALOG = [
     id: 'slm_laser',
     name: 'Fonderie Laser Titane SLM-900',
     category: 'Fabrication Additive',
-    baseCost: 1250000,
-    costMult: 1.34,
-    speedMult: 3.75,
+    baseCost: 2450000,
+    costMult: 1.42,
+    speedMult: 2.8,
     batchSize: 4,
     baseQuality: 99,
     basePrecision: 99,
@@ -282,78 +298,78 @@ const MACHINES_CATALOG = [
 
 const METROLOGY_CATALOG = [
   { id: 'caliper', name: 'Pied à Coulisse & Micromètre', cost: 0, speed: 1.0, detectRate: 0.72, reqTech: 'met_manual', desc: 'Contrôle manuel poste par poste.' },
-  { id: 'col2d', name: 'Colonne de Mesure 2D', cost: 1600, speed: 1.8, detectRate: 0.86, reqTech: 'met_col2d', desc: 'Relevés numériques de hauteurs et alésages.' },
-  { id: 'cmm3d', name: 'Machine Tridimensionnelle MMT', cost: 14500, speed: 3.0, detectRate: 0.95, reqTech: 'met_cmm', desc: 'Palpage 3D haute précision (requis pour EN 9100).' },
-  { id: 'scanner3d', name: 'Scanner Optique 3D Laser', cost: 62000, speed: 5.5, detectRate: 0.995, reqTech: 'met_scanner', desc: 'Numérisation complète et inspection automatique.' }
+  { id: 'col2d', name: 'Colonne de Mesure 2D', cost: 2800, speed: 1.8, detectRate: 0.86, reqTech: 'met_col2d', desc: 'Relevés numériques de hauteurs et alésages.' },
+  { id: 'cmm3d', name: 'Machine Tridimensionnelle MMT', cost: 26500, speed: 3.0, detectRate: 0.95, reqTech: 'met_cmm', desc: 'Palpage 3D haute précision (requis pour EN 9100).' },
+  { id: 'scanner3d', name: 'Scanner Optique 3D Laser', cost: 118000, speed: 5.5, detectRate: 0.995, reqTech: 'met_scanner', desc: 'Numérisation complète et inspection automatique.' }
 ];
 
 const CERTIFICATIONS_CATALOG = [
-  { id: 'iso9001', name: 'ISO 9001', reqRep: 20, reqMetro: 'col2d', bonus: 0.08, desc: '+8% valeur de vente & accès aux contrats Palier 2.' },
-  { id: 'en9100', name: 'EN 9100 Aéro', reqRep: 50, reqMetro: 'cmm3d', bonus: 0.14, desc: '+14% valeur de vente & contrats aéronautiques.' },
-  { id: 'nadcap', name: 'NADCAP Spatial', reqRep: 80, reqMetro: 'scanner3d', bonus: 0.22, desc: '+22% valeur de vente & appels d’offres spatiaux.' }
+  { id: 'iso9001', name: 'ISO 9001', reqRep: 25, reqMetro: 'col2d', bonus: 0.06, desc: '+6% valeur de vente & accès aux contrats Palier 2.' },
+  { id: 'en9100', name: 'EN 9100 Aéro', reqRep: 55, reqMetro: 'cmm3d', bonus: 0.11, desc: '+11% valeur de vente & contrats aéronautiques.' },
+  { id: 'nadcap', name: 'NADCAP Spatial', reqRep: 85, reqMetro: 'scanner3d', bonus: 0.16, desc: '+16% valeur de vente & appels d’offres spatiaux.' }
 ];
 
 const ATELIER_UPGRADES = {
   sizes: [
     { id: 'garage', name: 'Atelier Étudiant GMP', slots: 4, cost: 0, cols: 2 },
-    { id: 'hall_small', name: 'Hall Mécanique (8 îlots)', slots: 8, cost: 1800, cols: 4 },
-    { id: 'hall_med', name: 'Usine de Précision (12 îlots)', slots: 12, cost: 12500, cols: 4 },
-    { id: 'hall_large', name: 'Pôle Aéronautique (16 îlots)', slots: 16, cost: 68000, cols: 4 },
-    { id: 'complex_20', name: 'Complexe Industriel 4.0 (20 îlots)', slots: 20, cost: 290000, cols: 5 },
-    { id: 'gigafactory_24', name: 'Campus Aérospatial (24 îlots)', slots: 24, cost: 1150000, cols: 6 }
+    { id: 'hall_small', name: 'Hall Mécanique (8 îlots)', slots: 8, cost: 3400, cols: 4 },
+    { id: 'hall_med', name: 'Usine de Précision (12 îlots)', slots: 12, cost: 24500, cols: 4 },
+    { id: 'hall_large', name: 'Pôle Aéronautique (16 îlots)', slots: 16, cost: 135000, cols: 4 },
+    { id: 'complex_20', name: 'Complexe Industriel 4.0 (20 îlots)', slots: 20, cost: 580000, cols: 5 },
+    { id: 'gigafactory_24', name: 'Campus Aérospatial (24 îlots)', slots: 24, cost: 2250000, cols: 6 }
   ],
   floors: [
     { id: 'concrete', name: 'Dalle Béton Brut', cost: 0, speedBonus: 0, qualBonus: 0, bg: '#0f172a' },
-    { id: 'epoxy', name: 'Résine Époxy Antistatique', cost: 3200, speedBonus: 0.08, qualBonus: 3, bg: '#0c192c' },
-    { id: 'cleanroom', name: 'Sol Technique Salle Blanche', cost: 28000, speedBonus: 0.16, qualBonus: 7, bg: '#091e26' }
+    { id: 'epoxy', name: 'Résine Époxy Antistatique', cost: 6400, speedBonus: 0.06, qualBonus: 3, bg: '#0c192c' },
+    { id: 'cleanroom', name: 'Sol Technique Salle Blanche', cost: 58000, speedBonus: 0.12, qualBonus: 7, bg: '#091e26' }
   ],
   extras: [
-    { id: 'crane', name: 'Pont Roulant 5 Tonnes', cost: 4800, effect: '+12% cadence globale', desc: 'Manutention rapide des bruts lourds.' },
-    { id: 'agv', name: 'Flotte de Robots AGV', cost: 38000, effect: '+22% cadence globale', desc: 'Approvisionnement autonome des îlots CNC.' }
+    { id: 'crane', name: 'Pont Roulant 5 Tonnes', cost: 9500, effect: '+9% cadence globale', desc: 'Manutention rapide des bruts lourds.' },
+    { id: 'agv', name: 'Flotte de Robots AGV', cost: 78000, effect: '+16% cadence globale', desc: 'Approvisionnement autonome des îlots CNC.' }
   ]
 };
 
 const TECH_TREE_CATALOG = [
   // Branche 1 : Production
   { id: 'prod_conv', branch: 'Production', name: 'Usinage Conventionnel', moneyCost: 0, rpCost: 0, req: null, x: 455, y: 230, effect: 'Débloque Perceuse & Tour Conventionnel', unlocks: 'Départ' },
-  { id: 'prod_cnc3', branch: 'Production', name: 'Commande Numérique 3 Axes', moneyCost: 900, rpCost: 14, req: 'prod_conv', x: 380, y: 175, effect: 'Débloque Fraiseuse 3 Axes & Support mécanique', unlocks: 'Fraiseuse 3 Axes' },
-  { id: 'prod_bi', branch: 'Production', name: 'Tournage Bi-Broche', moneyCost: 5200, rpCost: 38, req: 'prod_cnc3', x: 295, y: 120, effect: 'Débloque Tour Bi-Broche (cadence x2)', unlocks: 'Tour Bi-Broche' },
-  { id: 'prod_5axis', branch: 'Production', name: 'Usinage 5 Axes UGV', moneyCost: 22000, rpCost: 90, req: 'prod_bi', crossReq: 'met_cmm', x: 205, y: 78, effect: 'Débloque Centre 5 Axes & Engrenage hélicoïdal', unlocks: 'Centre 5 Axes' },
-  { id: 'prod_edm', branch: 'Production', name: 'Électroérosion & Cellules 4.0', moneyCost: 95000, rpCost: 210, req: 'prod_5axis', x: 112, y: 45, effect: 'Débloque Cellule EDM & +20% Précision', unlocks: 'Cellule EDM' },
-  { id: 'prod_slm', branch: 'Production', name: 'Fonderie Laser Métal SLM', moneyCost: 680000, rpCost: 650, req: 'prod_edm', crossReq: 'mat_titanium', x: 42, y: 95, effect: 'Débloque Fonderie Laser Titane SLM-900 & Tuyère Spatielle', unlocks: 'Fonderie SLM-900' },
+  { id: 'prod_cnc3', branch: 'Production', name: 'Commande Numérique 3 Axes', moneyCost: 1850, rpCost: 22, req: 'prod_conv', x: 380, y: 175, effect: 'Débloque Fraiseuse 3 Axes & Support mécanique', unlocks: 'Fraiseuse 3 Axes' },
+  { id: 'prod_bi', branch: 'Production', name: 'Tournage Bi-Broche', moneyCost: 11500, rpCost: 60, req: 'prod_cnc3', x: 295, y: 120, effect: 'Débloque Tour Bi-Broche (cadence x2)', unlocks: 'Tour Bi-Broche' },
+  { id: 'prod_5axis', branch: 'Production', name: 'Usinage 5 Axes UGV', moneyCost: 48000, rpCost: 145, req: 'prod_bi', crossReq: 'met_cmm', x: 205, y: 78, effect: 'Débloque Centre 5 Axes & Engrenage hélicoïdal', unlocks: 'Centre 5 Axes' },
+  { id: 'prod_edm', branch: 'Production', name: 'Électroérosion & Cellules 4.0', moneyCost: 215000, rpCost: 320, req: 'prod_5axis', x: 112, y: 45, effect: 'Débloque Cellule EDM & +20% Précision', unlocks: 'Cellule EDM' },
+  { id: 'prod_slm', branch: 'Production', name: 'Fonderie Laser Métal SLM', moneyCost: 1450000, rpCost: 950, req: 'prod_edm', crossReq: 'mat_titanium', x: 42, y: 95, effect: 'Débloque Fonderie Laser Titane SLM-900 & Tuyère Spatielle', unlocks: 'Fonderie SLM-900' },
 
   // Branche 2 : Métrologie
   { id: 'met_manual', branch: 'Métrologie', name: 'Instruments Manuels', moneyCost: 0, rpCost: 0, req: null, x: 500, y: 205, effect: 'Débloque Pied à Coulisse & Micromètre', unlocks: 'Départ' },
-  { id: 'met_col2d', branch: 'Métrologie', name: 'Colonne de Mesure 2D', moneyCost: 1350, rpCost: 18, req: 'met_manual', x: 500, y: 142, effect: 'Débloque Colonne 2D & +15% Détection', unlocks: 'Colonne 2D' },
-  { id: 'met_cmm', branch: 'Métrologie', name: 'Machine Tridimensionnelle MMT', moneyCost: 11000, rpCost: 60, req: 'met_col2d', x: 500, y: 82, effect: 'Débloque MMT 3D & Certification EN 9100', unlocks: 'MMT 3D' },
-  { id: 'met_scanner', branch: 'Métrologie', name: 'Contrôle Optique Automatisé', moneyCost: 52000, rpCost: 145, req: 'met_cmm', x: 500, y: 32, effect: 'Débloque Scanner Optique 3D (Inspection Auto x3)', unlocks: 'Scanner 3D' },
+  { id: 'met_col2d', branch: 'Métrologie', name: 'Colonne de Mesure 2D', moneyCost: 2600, rpCost: 28, req: 'met_manual', x: 500, y: 142, effect: 'Débloque Colonne 2D & +15% Détection', unlocks: 'Colonne 2D' },
+  { id: 'met_cmm', branch: 'Métrologie', name: 'Machine Tridimensionnelle MMT', moneyCost: 22500, rpCost: 95, req: 'met_col2d', x: 500, y: 82, effect: 'Débloque MMT 3D & Certification EN 9100', unlocks: 'MMT 3D' },
+  { id: 'met_scanner', branch: 'Métrologie', name: 'Contrôle Optique Automatisé', moneyCost: 105000, rpCost: 230, req: 'met_cmm', x: 500, y: 32, effect: 'Débloque Scanner Optique 3D (Inspection Auto x3)', unlocks: 'Scanner 3D' },
 
   // Branche 3 : Qualité
   { id: 'qual_basic', branch: 'Qualité', name: 'Contrôle Réception & Tri', moneyCost: 0, rpCost: 0, req: null, x: 545, y: 230, effect: 'Active le tri Conforme / Rebut & Recyclage', unlocks: 'Départ' },
-  { id: 'qual_spc', branch: 'Qualité', name: 'Maîtrise Statistique (SPC)', moneyCost: 2400, rpCost: 24, req: 'qual_basic', x: 630, y: 175, effect: '+5 Qualité globale & -20% taux de défauts', unlocks: 'Procédé SPC' },
-  { id: 'qual_iso', branch: 'Qualité', name: 'Zéro Défaut & Assurance Qualité', moneyCost: 16000, rpCost: 72, req: 'qual_spc', crossReq: 'met_col2d', x: 725, y: 118, effect: '+8 Qualité, +6 Précision & -25% défauts', unlocks: 'Zéro Défaut' },
+  { id: 'qual_spc', branch: 'Qualité', name: 'Maîtrise Statistique (SPC)', moneyCost: 4800, rpCost: 38, req: 'qual_basic', x: 630, y: 175, effect: '+5 Qualité globale & -15% taux de défauts', unlocks: 'Procédé SPC' },
+  { id: 'qual_iso', branch: 'Qualité', name: 'Zéro Défaut & Assurance Qualité', moneyCost: 32000, rpCost: 115, req: 'qual_spc', crossReq: 'met_col2d', x: 725, y: 118, effect: '+8 Qualité, +6 Précision & -20% défauts', unlocks: 'Zéro Défaut' },
 
   // Branche 4 : Méthodes
   { id: 'meth_std', branch: 'Méthodes', name: 'Gammes Standardisées', moneyCost: 0, rpCost: 0, req: null, x: 575, y: 280, effect: 'Optimise la préparation des séries', unlocks: 'Départ' },
-  { id: 'meth_smed', branch: 'Méthodes', name: 'SMED & Changement Rapide', moneyCost: 3000, rpCost: 28, req: 'meth_std', x: 685, y: 280, effect: '+15% vitesse de cycle sur toutes les machines', unlocks: '+15% Cadence' },
-  { id: 'meth_lean', branch: 'Méthodes', name: 'Lean Manufacturing & Flux Tirés', moneyCost: 24000, rpCost: 85, req: 'meth_smed', crossReq: 'qual_spc', x: 805, y: 280, effect: '+25% vitesse de cycle & +12% valeur commerciale', unlocks: '+25% Cadence & Prix' },
+  { id: 'meth_smed', branch: 'Méthodes', name: 'SMED & Changement Rapide', moneyCost: 6200, rpCost: 45, req: 'meth_std', x: 685, y: 280, effect: '+10% vitesse de cycle sur toutes les machines', unlocks: '+10% Cadence' },
+  { id: 'meth_lean', branch: 'Méthodes', name: 'Lean Manufacturing & Flux Tirés', moneyCost: 46000, rpCost: 135, req: 'meth_smed', crossReq: 'qual_spc', x: 805, y: 280, effect: '+16% vitesse de cycle & +8% valeur commerciale', unlocks: '+16% Cadence & Prix' },
 
   // Branche 5 : Automatisation
   { id: 'auto_manual', branch: 'Automatisation', name: 'Manutention Manuelle', moneyCost: 0, rpCost: 0, req: null, x: 545, y: 330, effect: 'Alimentation standard des postes', unlocks: 'Départ' },
-  { id: 'auto_conv', branch: 'Automatisation', name: 'Convoyeurs & Chargement', moneyCost: 7500, rpCost: 48, req: 'auto_manual', crossReq: 'meth_smed', x: 650, y: 392, effect: '+10% vitesse globale & flux inter-îlots', unlocks: 'Convoyeurs' },
-  { id: 'auto_robot', branch: 'Automatisation', name: 'Cellules Robotisées 6 Axes', moneyCost: 46000, rpCost: 135, req: 'auto_conv', crossReq: 'met_scanner', x: 765, y: 455, effect: '+25% vitesse globale & production continue', unlocks: 'Robots 6 Axes' },
+  { id: 'auto_conv', branch: 'Automatisation', name: 'Convoyeurs & Chargement', moneyCost: 15500, rpCost: 75, req: 'auto_manual', crossReq: 'meth_smed', x: 650, y: 392, effect: '+8% vitesse globale & flux inter-îlots', unlocks: 'Convoyeurs' },
+  { id: 'auto_robot', branch: 'Automatisation', name: 'Cellules Robotisées 6 Axes', moneyCost: 92000, rpCost: 210, req: 'auto_conv', crossReq: 'met_scanner', x: 765, y: 455, effect: '+16% vitesse globale & production continue', unlocks: 'Robots 6 Axes' },
 
   // Branche 6 : Matériaux
   { id: 'mat_base', branch: 'Matériaux', name: 'Alliages Légers & Aciers', moneyCost: 0, rpCost: 0, req: null, x: 455, y: 330, effect: 'Débloque Aluminium 6061 & Acier C45', unlocks: 'Départ' },
-  { id: 'mat_inox', branch: 'Matériaux', name: 'Inox 316L & Cuivreux', moneyCost: 3400, rpCost: 28, req: 'mat_base', x: 355, y: 392, effect: 'Débloque Inox 316L, Cuivre & Bague Laiton', unlocks: 'Inox + Cuivre' },
-  { id: 'mat_peek', branch: 'Matériaux', name: 'Polymères Techniques PEEK', moneyCost: 11500, rpCost: 55, req: 'mat_inox', x: 255, y: 452, effect: 'Débloque Plastique PEEK & Isolateur Haute Temp.', unlocks: 'Plastique PEEK' },
-  { id: 'mat_titanium', branch: 'Matériaux', name: 'Titane Aéronautique TA6V', moneyCost: 42000, rpCost: 130, req: 'mat_peek', crossReq: 'prod_5axis', x: 145, y: 500, effect: 'Débloque Titane TA6V & Carter Aéronautique', unlocks: 'Titane TA6V' },
+  { id: 'mat_inox', branch: 'Matériaux', name: 'Inox 316L & Cuivreux', moneyCost: 6800, rpCost: 42, req: 'mat_base', x: 355, y: 392, effect: 'Débloque Inox 316L, Cuivre & Bague Laiton', unlocks: 'Inox + Cuivre' },
+  { id: 'mat_peek', branch: 'Matériaux', name: 'Polymères Techniques PEEK', moneyCost: 23500, rpCost: 88, req: 'mat_inox', x: 255, y: 452, effect: 'Débloque Plastique PEEK & Isolateur Haute Temp.', unlocks: 'Plastique PEEK' },
+  { id: 'mat_titanium', branch: 'Matériaux', name: 'Titane Aéronautique TA6V', moneyCost: 88000, rpCost: 205, req: 'mat_peek', crossReq: 'prod_5axis', x: 145, y: 500, effect: 'Débloque Titane TA6V & Carter Aéronautique', unlocks: 'Titane TA6V' },
 
   // Branche 7 : RH & Recrutement
   { id: 'rh_base', branch: 'RH', name: 'Intérim & Atelier', moneyCost: 0, rpCost: 0, req: null, x: 425, y: 280, effect: 'Débloque Caisse Standard (0.1% Secret)', unlocks: 'Départ' },
-  { id: 'rh_headhunt', branch: 'RH', name: 'Chasseurs de Têtes', moneyCost: 6500, rpCost: 42, req: 'rh_base', x: 315, y: 280, effect: 'Débloque Caisse Ingénierie (0% Malus, 0.35% Secret)', unlocks: 'Caisse Ingénierie' },
-  { id: 'rh_exec', branch: 'RH', name: 'Recrutement Direction GMP', moneyCost: 48000, rpCost: 145, req: 'rh_headhunt', x: 195, y: 280, effect: 'Débloque Caisse Direction GMP (1% Secret, 6% Mythique)', unlocks: 'Caisse Direction' },
-  { id: 'rh_academy', branch: 'RH', name: 'Académie & Tutorat GMP', moneyCost: 165000, rpCost: 290, req: 'rh_exec', crossReq: 'qual_iso', x: 80, y: 280, effect: '+15% efficacité des opérateurs & réduction coûts RH', unlocks: '+15% Bonus RH' }
+  { id: 'rh_headhunt', branch: 'RH', name: 'Chasseurs de Têtes', moneyCost: 14000, rpCost: 65, req: 'rh_base', x: 315, y: 280, effect: 'Débloque Caisse Ingénierie (0% Malus, 0.35% Secret)', unlocks: 'Caisse Ingénierie' },
+  { id: 'rh_exec', branch: 'RH', name: 'Recrutement Direction GMP', moneyCost: 96000, rpCost: 225, req: 'rh_headhunt', x: 195, y: 280, effect: 'Débloque Caisse Direction GMP (1% Secret, 6% Mythique)', unlocks: 'Caisse Direction' },
+  { id: 'rh_academy', branch: 'RH', name: 'Académie & Tutorat GMP', moneyCost: 340000, rpCost: 440, req: 'rh_exec', crossReq: 'qual_iso', x: 80, y: 280, effect: '+10% efficacité des opérateurs & réduction coûts RH', unlocks: '+10% Bonus RH' }
 ];
 
 const CRATE_TIERS = [
@@ -361,8 +377,8 @@ const CRATE_TIERS = [
     id: 'standard',
     name: 'Caisse Standard',
     subtitle: 'Recrutement Atelier',
-    baseCost: 250,
-    costMult: 1.26,
+    baseCost: 450,
+    costMult: 1.35,
     reqTech: null,
     badgeColor: 'text-sky-400 border-sky-500/40 bg-sky-950/50',
     accent: '#38bdf8',
@@ -372,8 +388,8 @@ const CRATE_TIERS = [
     id: 'engineering',
     name: 'Caisse Ingénierie',
     subtitle: 'Zéro Malus • Haute Qualification',
-    baseCost: 2400,
-    costMult: 1.32,
+    baseCost: 4800,
+    costMult: 1.40,
     reqTech: 'rh_headhunt',
     badgeColor: 'text-purple-400 border-purple-500/40 bg-purple-950/50',
     accent: '#c084fc',
@@ -383,8 +399,8 @@ const CRATE_TIERS = [
     id: 'direction',
     name: 'Caisse Direction GMP',
     subtitle: 'Élite • 1% Secret Garanti dans le Pool',
-    baseCost: 18500,
-    costMult: 1.38,
+    baseCost: 38000,
+    costMult: 1.45,
     reqTech: 'rh_exec',
     badgeColor: 'text-amber-400 border-amber-500/40 bg-amber-950/50',
     accent: '#fbbf24',
@@ -393,31 +409,24 @@ const CRATE_TIERS = [
 ];
 
 const EMPLOYEES_CATALOG = [
-  // SECRET (0.1%)
-  { id: 'emp_klepacz', name: 'Mr Klepacz', rarity: 'secret', role: 'Grand Maître UGV', baseMult: 1.50, qualBonus: 15, specialty: 'all', specialtyLabel: 'Toutes Machines', hair: '#cbd5e1', skin: '#f1c27d', shirt: '#be123c', glasses: true },
-  // MYTHIQUE (1%)
-  { id: 'emp_castagnetti', name: 'Cedric Castagnetti', rarity: 'mythique', role: 'Architecte 5 Axes', baseMult: 0.95, qualBonus: 11, specialty: 'all', specialtyLabel: 'Toutes Machines', hair: '#1e293b', skin: '#e0ac69', shirt: '#b91c1c', glasses: false },
-  { id: 'emp_mst', name: 'Ms T', rarity: 'mythique', role: 'Directrice Production', baseMult: 0.90, qualBonus: 10, specialty: 'all', specialtyLabel: 'Toutes Machines', hair: '#7c2d12', skin: '#f1c27d', shirt: '#991b1b', glasses: true },
-  // LÉGENDAIRE (5%)
-  { id: 'emp_pompidou', name: 'Pompidou', rarity: 'legendaire', role: 'Stratège Industriel', baseMult: 0.65, qualBonus: 8, specialty: 'cnc_5axis', specialtyLabel: 'Centre 5 Axes', hair: '#94a3b8', skin: '#f1c27d', shirt: '#b45309', glasses: true },
-  { id: 'emp_lorriot', name: 'Mr Lorriot', rarity: 'legendaire', role: 'Expert FAO & Cinématique', baseMult: 0.62, qualBonus: 8, specialty: 'edm_cell', specialtyLabel: 'Cellule EDM', hair: '#334155', skin: '#e0ac69', shirt: '#d97706', glasses: false },
-  { id: 'emp_marty', name: 'Mme Marty', rarity: 'legendaire', role: 'Cheffe Métrologie', baseMult: 0.60, qualBonus: 9, specialty: 'cnc_mill_3x', specialtyLabel: 'Fraiseuse 3 Axes', hair: '#92400e', skin: '#ffdbac', shirt: '#b45309', glasses: true },
-  { id: 'emp_blanchard', name: 'Mr Blanchard', rarity: 'legendaire', role: 'Maître Tourneur', baseMult: 0.58, qualBonus: 7, specialty: 'bi_spindle', specialtyLabel: 'Tour Bi-Broche', hair: '#64748b', skin: '#f1c27d', shirt: '#92400e', glasses: false },
-  { id: 'emp_graya', name: 'Mr Graya', rarity: 'legendaire', role: 'Ingénieur Matériaux', baseMult: 0.60, qualBonus: 8, specialty: 'slm_laser', specialtyLabel: 'Fonderie SLM', hair: '#0f172a', skin: '#c68642', shirt: '#d97706', glasses: true },
-  // ÉPIQUE (12%)
-  { id: 'emp_jeulin', name: 'Mr Jeulin', rarity: 'epique', role: 'Spécialiste Fabrication', baseMult: 0.42, qualBonus: 6, specialty: 'cnc_mill_3x', specialtyLabel: 'Fraiseuse 3 Axes', hair: '#475569', skin: '#f1c27d', shirt: '#6d28d9', glasses: true },
-  { id: 'emp_brun', name: 'Mr Brun', rarity: 'epique', role: 'Référent Méthodes', baseMult: 0.40, qualBonus: 5, specialty: 'bi_spindle', specialtyLabel: 'Tour Bi-Broche', hair: '#451a03', skin: '#e0ac69', shirt: '#7e22ce', glasses: false },
-  { id: 'emp_renaud', name: 'Mme Renaud', rarity: 'epique', role: 'Ingénieure Qualité', baseMult: 0.38, qualBonus: 7, specialty: 'cnc_5axis', specialtyLabel: 'Centre 5 Axes', hair: '#b45309', skin: '#ffdbac', shirt: '#5b21b6', glasses: true },
-  { id: 'emp_pietri', name: 'Mr Pietri', rarity: 'epique', role: 'Technicien UGV', baseMult: 0.40, qualBonus: 5, specialty: 'manual_lathe', specialtyLabel: 'Tour Conv.', hair: '#1e293b', skin: '#e0ac69', shirt: '#6b21a8', glasses: false },
-  // RARE (28%)
-  { id: 'emp_julien', name: 'Julien', rarity: 'rare', role: 'Régleur CN', baseMult: 0.26, qualBonus: 4, specialty: 'cnc_mill_3x', specialtyLabel: 'Fraiseuse 3 Axes', hair: '#78350f', skin: '#f1c27d', shirt: '#0369a1', glasses: false },
-  { id: 'emp_lauris', name: 'Lauris Rigal', rarity: 'rare', role: 'Opérateur Tournage', baseMult: 0.25, qualBonus: 3, specialty: 'manual_lathe', specialtyLabel: 'Tour Conv.', hair: '#334155', skin: '#f1c27d', shirt: '#0284c7', glasses: false },
-  { id: 'emp_pierre', name: 'Pierre Montant', rarity: 'rare', role: 'Contrôleur Atelier', baseMult: 0.24, qualBonus: 4, specialty: 'drill_saw', specialtyLabel: 'Perceuse/Scie', hair: '#92400e', skin: '#e0ac69', shirt: '#0369a1', glasses: true },
-  { id: 'emp_sebastien', name: 'Sebastien', rarity: 'rare', role: 'Fraiseur Confirmé', baseMult: 0.25, qualBonus: 3, specialty: 'cnc_mill_3x', specialtyLabel: 'Fraiseuse 3 Axes', hair: '#1e293b', skin: '#f1c27d', shirt: '#075985', glasses: false },
-  // COMMUN (47%)
-  { id: 'emp_hugo', name: 'Hugo', rarity: 'commun', role: 'Apprenti GMP', baseMult: 0.14, qualBonus: 2, specialty: 'drill_saw', specialtyLabel: 'Perceuse/Scie', hair: '#a16207', skin: '#ffdbac', shirt: '#334155', glasses: false },
-  { id: 'emp_elliot', name: 'Elliot', rarity: 'commun', role: 'Opérateur Débutant', baseMult: 0.12, qualBonus: 2, specialty: 'manual_lathe', specialtyLabel: 'Tour Conv.', hair: '#475569', skin: '#f1c27d', shirt: '#475569', glasses: false },
-  // MALUS (6.9%)
+  { id: 'emp_klepacz', name: 'Mr Klepacz', rarity: 'secret', role: 'Grand Maître UGV', baseMult: 1.15, qualBonus: 14, specialty: 'all', specialtyLabel: 'Toutes Machines', hair: '#cbd5e1', skin: '#f1c27d', shirt: '#be123c', glasses: true },
+  { id: 'emp_castagnetti', name: 'Cedric Castagnetti', rarity: 'mythique', role: 'Architecte 5 Axes', baseMult: 0.72, qualBonus: 10, specialty: 'all', specialtyLabel: 'Toutes Machines', hair: '#1e293b', skin: '#e0ac69', shirt: '#b91c1c', glasses: false },
+  { id: 'emp_mst', name: 'Ms T', rarity: 'mythique', role: 'Directrice Production', baseMult: 0.68, qualBonus: 9, specialty: 'all', specialtyLabel: 'Toutes Machines', hair: '#7c2d12', skin: '#f1c27d', shirt: '#991b1b', glasses: true },
+  { id: 'emp_pompidou', name: 'Pompidou', rarity: 'legendaire', role: 'Stratège Industriel', baseMult: 0.48, qualBonus: 7, specialty: 'cnc_5axis', specialtyLabel: 'Centre 5 Axes', hair: '#94a3b8', skin: '#f1c27d', shirt: '#b45309', glasses: true },
+  { id: 'emp_lorriot', name: 'Mr Lorriot', rarity: 'legendaire', role: 'Expert FAO & Cinématique', baseMult: 0.46, qualBonus: 7, specialty: 'edm_cell', specialtyLabel: 'Cellule EDM', hair: '#334155', skin: '#e0ac69', shirt: '#d97706', glasses: false },
+  { id: 'emp_marty', name: 'Mme Marty', rarity: 'legendaire', role: 'Cheffe Métrologie', baseMult: 0.45, qualBonus: 8, specialty: 'cnc_mill_3x', specialtyLabel: 'Fraiseuse 3 Axes', hair: '#92400e', skin: '#ffdbac', shirt: '#b45309', glasses: true },
+  { id: 'emp_blanchard', name: 'Mr Blanchard', rarity: 'legendaire', role: 'Maître Tourneur', baseMult: 0.44, qualBonus: 6, specialty: 'bi_spindle', specialtyLabel: 'Tour Bi-Broche', hair: '#64748b', skin: '#f1c27d', shirt: '#92400e', glasses: false },
+  { id: 'emp_graya', name: 'Mr Graya', rarity: 'legendaire', role: 'Ingénieur Matériaux', baseMult: 0.45, qualBonus: 7, specialty: 'slm_laser', specialtyLabel: 'Fonderie SLM', hair: '#0f172a', skin: '#c68642', shirt: '#d97706', glasses: true },
+  { id: 'emp_jeulin', name: 'Mr Jeulin', rarity: 'epique', role: 'Spécialiste Fabrication', baseMult: 0.30, qualBonus: 5, specialty: 'cnc_mill_3x', specialtyLabel: 'Fraiseuse 3 Axes', hair: '#475569', skin: '#f1c27d', shirt: '#6d28d9', glasses: true },
+  { id: 'emp_brun', name: 'Mr Brun', rarity: 'epique', role: 'Référent Méthodes', baseMult: 0.28, qualBonus: 4, specialty: 'bi_spindle', specialtyLabel: 'Tour Bi-Broche', hair: '#451a03', skin: '#e0ac69', shirt: '#7e22ce', glasses: false },
+  { id: 'emp_renaud', name: 'Mme Renaud', rarity: 'epique', role: 'Ingénieure Qualité', baseMult: 0.28, qualBonus: 6, specialty: 'cnc_5axis', specialtyLabel: 'Centre 5 Axes', hair: '#b45309', skin: '#ffdbac', shirt: '#5b21b6', glasses: true },
+  { id: 'emp_pietri', name: 'Mr Pietri', rarity: 'epique', role: 'Technicien UGV', baseMult: 0.29, qualBonus: 4, specialty: 'manual_lathe', specialtyLabel: 'Tour Conv.', hair: '#1e293b', skin: '#e0ac69', shirt: '#6b21a8', glasses: false },
+  { id: 'emp_julien', name: 'Julien', rarity: 'rare', role: 'Régleur CN', baseMult: 0.18, qualBonus: 3, specialty: 'cnc_mill_3x', specialtyLabel: 'Fraiseuse 3 Axes', hair: '#78350f', skin: '#f1c27d', shirt: '#0369a1', glasses: false },
+  { id: 'emp_lauris', name: 'Lauris Rigal', rarity: 'rare', role: 'Opérateur Tournage', baseMult: 0.18, qualBonus: 3, specialty: 'manual_lathe', specialtyLabel: 'Tour Conv.', hair: '#334155', skin: '#f1c27d', shirt: '#0284c7', glasses: false },
+  { id: 'emp_pierre', name: 'Pierre Montant', rarity: 'rare', role: 'Contrôleur Atelier', baseMult: 0.17, qualBonus: 4, specialty: 'drill_saw', specialtyLabel: 'Perceuse/Scie', hair: '#92400e', skin: '#e0ac69', shirt: '#0369a1', glasses: true },
+  { id: 'emp_sebastien', name: 'Sebastien', rarity: 'rare', role: 'Fraiseur Confirmé', baseMult: 0.18, qualBonus: 3, specialty: 'cnc_mill_3x', specialtyLabel: 'Fraiseuse 3 Axes', hair: '#1e293b', skin: '#f1c27d', shirt: '#075985', glasses: false },
+  { id: 'emp_hugo', name: 'Hugo', rarity: 'commun', role: 'Apprenti GMP', baseMult: 0.10, qualBonus: 2, specialty: 'drill_saw', specialtyLabel: 'Perceuse/Scie', hair: '#a16207', skin: '#ffdbac', shirt: '#334155', glasses: false },
+  { id: 'emp_elliot', name: 'Elliot', rarity: 'commun', role: 'Opérateur Débutant', baseMult: 0.08, qualBonus: 1, specialty: 'manual_lathe', specialtyLabel: 'Tour Conv.', hair: '#475569', skin: '#f1c27d', shirt: '#475569', glasses: false },
   { id: 'emp_marylou', name: 'Marylou', rarity: 'malus', role: 'Fraise Casse-Outils', baseMult: -0.25, qualBonus: -6, specialty: 'all', specialtyLabel: 'Malus (-25%)', hair: '#be185d', skin: '#ffdbac', shirt: '#4d7c0f', glasses: true },
   { id: 'emp_werda', name: 'Mme Werda', rarity: 'malus', role: 'Origine d’Arrêt Machine', baseMult: -0.30, qualBonus: -8, specialty: 'all', specialtyLabel: 'Malus (-30%)', hair: '#1e293b', skin: '#e0ac69', shirt: '#3f6212', glasses: true },
   { id: 'emp_benhenni', name: 'Mr Ben henni', rarity: 'malus', role: 'Déréglage Permanent', baseMult: -0.35, qualBonus: -10, specialty: 'all', specialtyLabel: 'Malus (-35%)', hair: '#0f172a', skin: '#c68642', shirt: '#365314', glasses: false }
@@ -436,12 +445,12 @@ const RARITY_CONFIG = {
 };
 
 const MISSIONS_CATALOG = [
-  { id: 'm_produce_10', title: 'Premiers Copeaux', desc: 'Produire 10 pièces dans votre atelier.', target: 10, statKey: 'partsProduced', rewardMoney: 180, rewardRP: 8 },
-  { id: 'm_sell_25', title: 'Premières Expéditions', desc: 'Vendre 25 pièces conformes.', target: 25, statKey: 'partsSold', rewardMoney: 450, rewardRP: 15 },
-  { id: 'm_inspect_30', title: 'Rigueur Métrologique', desc: 'Contrôler 30 pièces au laboratoire.', target: 30, statKey: 'partsInspected', rewardMoney: 950, rewardRP: 25 },
-  { id: 'm_contract_3', title: 'Fournisseur Fiable', desc: 'Honorer 3 appels d’offres clients.', target: 3, statKey: 'contractsCompleted', rewardMoney: 3200, rewardRP: 45 },
-  { id: 'm_produce_250', title: 'Cadence Industrielle', desc: 'Produire 250 pièces au total.', target: 250, statKey: 'partsProduced', rewardMoney: 12000, rewardRP: 90 },
-  { id: 'm_contract_12', title: 'Partenaire Aéronautique', desc: 'Honorer 12 appels d’offres.', target: 12, statKey: 'contractsCompleted', rewardMoney: 55000, rewardRP: 220 }
+  { id: 'm_produce_15', title: 'Premiers Copeaux', desc: 'Produire 15 pièces dans votre atelier.', target: 15, statKey: 'partsProduced', rewardMoney: 140, rewardRP: 6 },
+  { id: 'm_sell_40', title: 'Premières Expéditions', desc: 'Vendre 40 pièces conformes.', target: 40, statKey: 'partsSold', rewardMoney: 380, rewardRP: 12 },
+  { id: 'm_inspect_60', title: 'Rigueur Métrologique', desc: 'Contrôler 60 pièces au laboratoire.', target: 60, statKey: 'partsInspected', rewardMoney: 820, rewardRP: 20 },
+  { id: 'm_contract_4', title: 'Fournisseur Fiable', desc: 'Honorer 4 appels d’offres clients.', target: 4, statKey: 'contractsCompleted', rewardMoney: 2600, rewardRP: 38 },
+  { id: 'm_produce_400', title: 'Cadence Industrielle', desc: 'Produire 400 pièces au total.', target: 400, statKey: 'partsProduced', rewardMoney: 9500, rewardRP: 75 },
+  { id: 'm_contract_15', title: 'Partenaire Aéronautique', desc: 'Honorer 15 appels d’offres.', target: 15, statKey: 'contractsCompleted', rewardMoney: 42000, rewardRP: 180 }
 ];
 
 // ============================================================================
@@ -458,13 +467,13 @@ function formatMoney(val) {
 function generateContractOffer(reputation, unlockedTechs) {
   const availableParts = PARTS_CATALOG.filter(p => !p.reqTech || unlockedTechs.includes(p.reqTech));
   const part = availableParts[Math.floor(Math.random() * availableParts.length)] || PARTS_CATALOG[0];
-  const tier = reputation >= 60 ? 3 : reputation >= 25 ? 2 : 1;
-  const qty = tier === 1 ? 8 + Math.floor(Math.random() * 10) : tier === 2 ? 18 + Math.floor(Math.random() * 18) : 35 + Math.floor(Math.random() * 30);
+  const tier = reputation >= 65 ? 3 : reputation >= 28 ? 2 : 1;
+  const qty = tier === 1 ? 15 + Math.floor(Math.random() * 15) : tier === 2 ? 32 + Math.floor(Math.random() * 28) : 65 + Math.floor(Math.random() * 55);
   const minQuality = tier === 1 ? 72 : tier === 2 ? 84 : 92;
   const clients = ['Airbus Atlantic', 'Safran Landing', 'Dassault Systèmes', 'Alstom Transport', 'ArianeGroup', 'Michelin Outillage', 'Thales Avionics'];
   const client = clients[Math.floor(Math.random() * clients.length)];
-  const baseReward = Math.round(part.sellPrice * qty * (1.28 + tier * 0.14));
-  const rpReward = tier * 12 + Math.floor(qty / 4);
+  const baseReward = Math.round(part.sellPrice * qty * (1.16 + tier * 0.08));
+  const rpReward = tier * 9 + Math.floor(qty / 8);
   return {
     id: `ctr_${Date.now()}_${Math.floor(Math.random() * 9999)}`,
     client,
@@ -502,17 +511,14 @@ const ManualSpindleSVG = ({ rpm, sparks }) => (
       strokeLinecap="round"
       transform="rotate(-90 70 70)"
     />
-    {/* Corps de broche */}
     <rect x="48" y="16" width="44" height="26" rx="4" fill="#334155" stroke="#64748b" strokeWidth="1.5" />
     <rect x="54" y="42" width="32" height="14" rx="2" fill="#475569" stroke="#94a3b8" strokeWidth="1.5" />
-    {/* Fraise hélicoïdale animée */}
     <g style={{ transformOrigin: '70px 76px', animation: rpm > 100 ? `spin ${Math.max(0.12, 1.2 - rpm / 6000)}s linear infinite` : 'none' }}>
       <rect x="64" y="56" width="12" height="38" rx="2" fill="#cbd5e1" stroke="#38bdf8" strokeWidth="1.2" />
       <line x1="64" y1="64" x2="76" y2="70" stroke="#0284c7" strokeWidth="2" />
       <line x1="64" y1="74" x2="76" y2="80" stroke="#0284c7" strokeWidth="2" />
       <line x1="64" y1="84" x2="76" y2="90" stroke="#0284c7" strokeWidth="2" />
     </g>
-    {/* Brut usiné */}
     <rect x="34" y="96" width="72" height="18" rx="3" fill="#1e293b" stroke="#38bdf8" strokeWidth="1.5" />
     {sparks && (
       <g fill="#facc15">
@@ -664,13 +670,9 @@ const CharacterPortrait = ({ emp, sizeClass = 'w-12 h-12' }) => {
         <svg viewBox="0 0 64 64" className="w-full h-full">
           <rect width="64" height="64" fill="#0f172a" />
           <circle cx="32" cy="32" r="28" fill={rar.hex} fillOpacity="0.16" />
-          {/* Buste */}
           <path d="M14 62 C14 47, 50 47, 50 62" fill={emp.shirt || '#334155'} />
-          {/* Visage */}
           <circle cx="32" cy="29" r="13" fill={emp.skin || '#f1c27d'} />
-          {/* Cheveux */}
           <path d="M19 27 C19 14, 45 14, 45 27 C42 20, 22 20, 19 27 Z" fill={emp.hair || '#1e293b'} />
-          {/* Yeux */}
           <circle cx="27" cy="29" r="1.7" fill="#0f172a" />
           <circle cx="37" cy="29" r="1.7" fill="#0f172a" />
           {emp.glasses && (
@@ -680,7 +682,6 @@ const CharacterPortrait = ({ emp, sizeClass = 'w-12 h-12' }) => {
               <line x1="31" y1="28.5" x2="33" y2="28.5" />
             </g>
           )}
-          {/* Sourire ou moue malus */}
           {emp.rarity === 'malus' ? (
             <path d="M27 36 Q32 32 37 36" stroke="#7f1d1d" strokeWidth="1.8" fill="none" strokeLinecap="round" />
           ) : (
@@ -704,12 +705,10 @@ const SupplyCrateSVG = ({ isOpening, rarityColor = '#38bdf8' }) => (
       </radialGradient>
     </defs>
     <ellipse cx="60" cy="52" rx="52" ry="38" fill="url(#crateBeam)" />
-    {/* Corps caisse */}
     <rect x="24" y="38" width="72" height="44" rx="6" fill="#1e293b" stroke={rarityColor} strokeWidth="2.5" />
     <line x1="24" y1="54" x2="96" y2="54" stroke="#475569" strokeWidth="2" />
     <line x1="48" y1="38" x2="48" y2="82" stroke="#334155" strokeWidth="2" />
     <line x1="72" y1="38" x2="72" y2="82" stroke="#334155" strokeWidth="2" />
-    {/* Couvercle */}
     <g transform={isOpening ? 'translate(0, -10) rotate(-6 60 34)' : ''}>
       <rect x="20" y="26" width="80" height="14" rx="4" fill="#334155" stroke={rarityColor} strokeWidth="2.5" />
       <rect x="52" y="30" width="16" height="10" rx="2" fill={rarityColor} />
@@ -911,7 +910,6 @@ const TechNodeGlyph = ({ node, unlocked, available }) => {
 // 5. COMPOSANT PRINCIPAL : CNC TYCOON GMP
 // ============================================================================
 export default function App() {
-  // --- AUTHENTIFICATION & PROFIL ---
   const [pseudo, setPseudo] = useState(() => localStorage.getItem('cnc_pseudo') || '');
   const [password, setPassword] = useState(() => localStorage.getItem('cnc_password') || '');
   const [isLoggedIn, setIsLoggedIn] = useState(() => Boolean(localStorage.getItem('cnc_pseudo')));
@@ -920,9 +918,9 @@ export default function App() {
   const [authError, setAuthError] = useState('');
   const [firebaseUser, setFirebaseUser] = useState(null);
 
-  // --- ÉTAT DU JEU (SAISON 2) ---
-  const [money, setMoney] = useState(120);
-  const [researchPoints, setResearchPoints] = useState(5);
+  // --- ÉTAT DU JEU ---
+  const [money, setMoney] = useState(115);
+  const [researchPoints, setResearchPoints] = useState(4);
   const [clickLevel, setClickLevel] = useState(1);
   const [spindleRpm, setSpindleRpm] = useState(0);
   const [spindleSparks, setSpindleSparks] = useState(false);
@@ -931,8 +929,8 @@ export default function App() {
     Array.from({ length: 4 }, () => ({ machineId: null, employeeId: null, partId: 'spacer_alu', progress: 0, status: 'EMPTY' }))
   );
   const [materialStock, setMaterialStock] = useState({
-    alu_6061: 12,
-    steel_c45: 5,
+    alu_6061: 8,
+    steel_c45: 3,
     brass_cw614: 0,
     inox_316l: 0,
     peek_hp: 0,
@@ -943,7 +941,7 @@ export default function App() {
 
   const [metrologyOwned, setMetrologyOwned] = useState(['caliper']);
   const [activeMetroId, setActiveMetroId] = useState('caliper');
-  const [autoInspect, setAutoInspect] = useState(true);
+  const [autoInspect, setAutoInspect] = useState(false);
   const [reputation, setReputation] = useState(10);
   const [repMetrics, setRepMetrics] = useState({ quality: 65, reliability: 60, innovation: 20, capacity: 25, delivery: 70 });
 
@@ -957,6 +955,7 @@ export default function App() {
   const [activeCrateTier, setActiveCrateTier] = useState('standard');
   const [isOpeningCrate, setIsOpeningCrate] = useState(false);
   const [lastCrateDrop, setLastCrateDrop] = useState(null);
+  const [showCrateRevealModal, setShowCrateRevealModal] = useState(false);
   const [cardSubTab, setCardSubTab] = useState('deck');
   const [cardFilterRarity, setCardFilterRarity] = useState('all');
   const [cardOnlyMergeable, setCardOnlyMergeable] = useState(false);
@@ -973,9 +972,14 @@ export default function App() {
   const [toasts, setToasts] = useState([]);
   const [showTutorial, setShowTutorial] = useState(() => !localStorage.getItem('cnc_gmp_tuto_seen'));
   const [tutorialStep, setTutorialStep] = useState(0);
+  const [lastSavedAt, setLastSavedAt] = useState(null);
+  const [importCodeText, setImportCodeText] = useState('');
 
-  // --- COFFRE-FORT ANTI-CHEAT EN MÉMOIRE ---
-  const secureVaultRef = useRef({ money: 120, rp: 5, lastClickTs: 0 });
+  // --- COFFRE-FORT ANTI-CHEAT & SNAPSHOT DE SAUVEGARDE ---
+  const secureVaultRef = useRef({ money: 115, rp: 4, lastClickTs: 0 });
+  const isHydratedRef = useRef(false);
+  const latestStateRef = useRef(null);
+  const lastCloudSyncRef = useRef(0);
 
   const addToast = (text, type = 'info') => {
     const id = `${Date.now()}_${Math.random()}`;
@@ -983,6 +987,126 @@ export default function App() {
     setTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== id));
     }, 3200);
+  };
+
+  const applySavedState = (saved) => {
+    if (!saved || typeof saved !== 'object') return false;
+    if (typeof saved.money === 'number') { setMoney(saved.money); secureVaultRef.current.money = saved.money; }
+    if (typeof saved.researchPoints === 'number') { setResearchPoints(saved.researchPoints); secureVaultRef.current.rp = saved.researchPoints; }
+    if (typeof saved.clickLevel === 'number') setClickLevel(saved.clickLevel);
+    if (Array.isArray(saved.slots) && saved.slots.length > 0) setSlots(saved.slots);
+    if (saved.materialStock) setMaterialStock(prev => ({ ...prev, ...saved.materialStock }));
+    if (Array.isArray(saved.partLots)) setPartLots(saved.partLots);
+    if (typeof saved.autoSell === 'boolean') setAutoSell(saved.autoSell);
+    if (Array.isArray(saved.metrologyOwned)) setMetrologyOwned(saved.metrologyOwned);
+    if (saved.activeMetroId) setActiveMetroId(saved.activeMetroId);
+    if (typeof saved.autoInspect === 'boolean') setAutoInspect(saved.autoInspect);
+    if (typeof saved.reputation === 'number') setReputation(saved.reputation);
+    if (saved.repMetrics) setRepMetrics(saved.repMetrics);
+    if (Array.isArray(saved.unlockedTechs) && saved.unlockedTechs.length > 0) setUnlockedTechs(saved.unlockedTechs);
+    if (saved.inventory) setInventory(saved.inventory);
+    if (saved.crateOpens) setCrateOpens(saved.crateOpens);
+    if (Array.isArray(saved.contracts) && saved.contracts.length > 0) setContracts(saved.contracts);
+    if (Array.isArray(saved.claimedMissions)) setClaimedMissions(saved.claimedMissions);
+    if (saved.stats) setStats(saved.stats);
+    if (saved.atelier) setAtelier(saved.atelier);
+    return true;
+  };
+
+  const buildSaveSnapshot = (overridePseudo = pseudo) => ({
+    pseudo: overridePseudo,
+    money: secureVaultRef.current.money,
+    researchPoints: secureVaultRef.current.rp,
+    clickLevel,
+    slots,
+    materialStock,
+    partLots,
+    autoSell,
+    metrologyOwned,
+    activeMetroId,
+    autoInspect,
+    reputation,
+    repMetrics,
+    unlockedTechs,
+    inventory,
+    crateOpens,
+    contracts,
+    claimedMissions,
+    stats,
+    atelier,
+    updatedAt: Date.now()
+  });
+
+  const persistLocalNow = (overridePseudo = pseudo) => {
+    if (!isHydratedRef.current) return null;
+    const payload = buildSaveSnapshot(overridePseudo);
+    const encoded = encodeSecureSave(payload);
+    try {
+      localStorage.setItem(SAVE_STORAGE_KEY, encoded);
+      localStorage.setItem(SAVE_BACKUP_KEY, encoded);
+      if (overridePseudo) {
+        const cleanId = overridePseudo.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+        localStorage.setItem(`${SAVE_STORAGE_KEY}_${cleanId}`, encoded);
+      }
+      setLastSavedAt(payload.updatedAt);
+    } catch (e) {
+      console.warn('Erreur écriture sauvegarde locale:', e);
+    }
+    return payload;
+  };
+
+  const syncFullSaveToCloud = async (payload, force = false) => {
+    if (!db || !isLoggedIn || !payload?.pseudo) return;
+    const now = Date.now();
+    if (!force && now - lastCloudSyncRef.current < 8000) return;
+    lastCloudSyncRef.current = now;
+    const cleanId = payload.pseudo.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+    const encoded = encodeSecureSave(payload);
+    try {
+      await setDoc(doc(db, 'artifacts', SEASON_APP_ID, 'public', 'data', 'accounts', cleanId), {
+        pseudo: payload.pseudo.trim(),
+        passwordHash: computeIntegrityHash(password || ''),
+        encodedSave: encoded,
+        updatedAt: payload.updatedAt
+      }, { merge: true });
+
+      await setDoc(doc(db, 'artifacts', SEASON_APP_ID, 'public', 'data', 'leaderboard', cleanId), {
+        pseudo: payload.pseudo.trim(),
+        money: Math.round(payload.money || 0),
+        reputation: Math.round(payload.reputation || 10),
+        partsProduced: payload.stats?.partsProduced || 0,
+        updatedAt: payload.updatedAt
+      }, { merge: true });
+    } catch {
+      // Mode hors-ligne
+    }
+  };
+
+  const restoreFromCloudIfNewer = async (targetPseudo, targetPass = '') => {
+    if (!db || !targetPseudo) return false;
+    const cleanId = targetPseudo.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+    try {
+      const snap = await getDoc(doc(db, 'artifacts', SEASON_APP_ID, 'public', 'data', 'accounts', cleanId));
+      if (!snap.exists()) return false;
+      const cloudDoc = snap.data();
+      if (cloudDoc.passwordHash && targetPass && cloudDoc.passwordHash !== computeIntegrityHash(targetPass)) {
+        return 'WRONG_PASSWORD';
+      }
+      const cloudSave = decodeSecureSave(cloudDoc.encodedSave);
+      if (!cloudSave) return false;
+      const localSave = loadBestLocalSave(targetPseudo);
+      if (!localSave || (cloudSave.updatedAt || 0) > (localSave.updatedAt || 0)) {
+        applySavedState(cloudSave);
+        const encoded = encodeSecureSave(cloudSave);
+        localStorage.setItem(SAVE_STORAGE_KEY, encoded);
+        localStorage.setItem(SAVE_BACKUP_KEY, encoded);
+        localStorage.setItem(`${SAVE_STORAGE_KEY}_${cleanId}`, encoded);
+        return true;
+      }
+    } catch {
+      // Silencieux en hors-ligne
+    }
+    return false;
   };
 
   const adjustMoney = (delta) => {
@@ -1001,7 +1125,6 @@ export default function App() {
     });
   };
 
-  // Surveillance d'intégrité mémoire contre l'injection React DevTools
   useEffect(() => {
     const guard = setInterval(() => {
       if (Math.abs(money - secureVaultRef.current.money) > 1.5) {
@@ -1015,41 +1138,22 @@ export default function App() {
     return () => clearInterval(guard);
   }, [money, researchPoints]);
 
-  // Purge des anciennes sauvegardes (Remise à zéro Saison 2) + Chargement sauvegarde S2
   useEffect(() => {
     LEGACY_KEYS.forEach(k => localStorage.removeItem(k));
-    const saved = decodeSecureSave(localStorage.getItem(SAVE_STORAGE_KEY));
+    const initialPseudo = localStorage.getItem('cnc_pseudo') || '';
+    const saved = loadBestLocalSave(initialPseudo);
     if (saved) {
-      if (typeof saved.money === 'number') { setMoney(saved.money); secureVaultRef.current.money = saved.money; }
-      if (typeof saved.researchPoints === 'number') { setResearchPoints(saved.researchPoints); secureVaultRef.current.rp = saved.researchPoints; }
-      if (typeof saved.clickLevel === 'number') setClickLevel(saved.clickLevel);
-      if (Array.isArray(saved.slots)) setSlots(saved.slots);
-      if (saved.materialStock) setMaterialStock(prev => ({ ...prev, ...saved.materialStock }));
-      if (Array.isArray(saved.partLots)) setPartLots(saved.partLots);
-      if (typeof saved.autoSell === 'boolean') setAutoSell(saved.autoSell);
-      if (Array.isArray(saved.metrologyOwned)) setMetrologyOwned(saved.metrologyOwned);
-      if (saved.activeMetroId) setActiveMetroId(saved.activeMetroId);
-      if (typeof saved.autoInspect === 'boolean') setAutoInspect(saved.autoInspect);
-      if (typeof saved.reputation === 'number') setReputation(saved.reputation);
-      if (saved.repMetrics) setRepMetrics(saved.repMetrics);
-      if (Array.isArray(saved.unlockedTechs)) setUnlockedTechs(saved.unlockedTechs);
-      if (saved.inventory) setInventory(saved.inventory);
-      if (saved.crateOpens) setCrateOpens(saved.crateOpens);
-      if (Array.isArray(saved.contracts)) setContracts(saved.contracts);
-      if (Array.isArray(saved.claimedMissions)) setClaimedMissions(saved.claimedMissions);
-      if (saved.stats) setStats(saved.stats);
-      if (saved.atelier) setAtelier(saved.atelier);
+      applySavedState(saved);
     }
+    isHydratedRef.current = true;
   }, []);
 
-  // Auth anonyme Firebase
   useEffect(() => {
     if (!auth) return;
     signInAnonymously(auth).catch(() => {});
     return onAuthStateChanged(auth, user => setFirebaseUser(user));
   }, []);
 
-  // Génération initiale des appels d'offres
   useEffect(() => {
     if (contracts.length === 0) {
       setContracts([
@@ -1060,7 +1164,6 @@ export default function App() {
     }
   }, []);
 
-  // Bonus globaux calculés
   const modifiers = useMemo(() => {
     const floorObj = ATELIER_UPGRADES.floors.find(f => f.id === atelier.floorId) || ATELIER_UPGRADES.floors[0];
     let speedBonus = floorObj.speedBonus;
@@ -1069,16 +1172,16 @@ export default function App() {
     let priceBonus = 0;
     let defectReduction = 0;
 
-    if (atelier.extras.includes('crane')) speedBonus += 0.12;
-    if (atelier.extras.includes('agv')) speedBonus += 0.22;
+    if (atelier.extras.includes('crane')) speedBonus += 0.09;
+    if (atelier.extras.includes('agv')) speedBonus += 0.16;
 
-    if (unlockedTechs.includes('qual_spc')) { qualBonus += 5; defectReduction += 0.20; }
-    if (unlockedTechs.includes('qual_iso')) { qualBonus += 8; precBonus += 6; defectReduction += 0.25; }
-    if (unlockedTechs.includes('meth_smed')) speedBonus += 0.15;
-    if (unlockedTechs.includes('meth_lean')) { speedBonus += 0.25; priceBonus += 0.12; }
-    if (unlockedTechs.includes('auto_conv')) speedBonus += 0.10;
-    if (unlockedTechs.includes('auto_robot')) speedBonus += 0.25;
-    if (unlockedTechs.includes('rh_academy')) { speedBonus += 0.15; qualBonus += 3; }
+    if (unlockedTechs.includes('qual_spc')) { qualBonus += 5; defectReduction += 0.15; }
+    if (unlockedTechs.includes('qual_iso')) { qualBonus += 8; precBonus += 6; defectReduction += 0.20; }
+    if (unlockedTechs.includes('meth_smed')) speedBonus += 0.10;
+    if (unlockedTechs.includes('meth_lean')) { speedBonus += 0.16; priceBonus += 0.08; }
+    if (unlockedTechs.includes('auto_conv')) speedBonus += 0.08;
+    if (unlockedTechs.includes('auto_robot')) speedBonus += 0.16;
+    if (unlockedTechs.includes('rh_academy')) { speedBonus += 0.10; qualBonus += 3; }
 
     return { speedBonus, qualBonus, precBonus, priceBonus, defectReduction };
   }, [atelier, unlockedTechs]);
@@ -1093,9 +1196,9 @@ export default function App() {
     return bonus;
   }, [reputation, activeMetroId]);
 
-  // Coûts dynamiques
-  const manualUpgradeCost = Math.round(65 * Math.pow(1.42, clickLevel - 1));
-  const rpStudyCost = Math.round(140 * Math.pow(1.22, Math.floor(unlockedTechs.length - 6)));
+  // Coûts dynamiques (courbe lente et stratégique)
+  const manualUpgradeCost = Math.round(95 * Math.pow(1.58, clickLevel - 1));
+  const rpStudyCost = Math.round(280 * Math.pow(1.32, Math.max(0, unlockedTechs.length - 6)));
   const getMachineCost = (mId) => {
     const m = MACHINES_CATALOG.find(x => x.id === mId);
     if (!m) return 999999;
@@ -1105,7 +1208,7 @@ export default function App() {
   const getCrateCost = (tierId) => {
     const tier = CRATE_TIERS.find(t => t.id === tierId) || CRATE_TIERS[0];
     const opens = Number(crateOpens?.[tier.id]) || 0;
-    const rhDiscount = unlockedTechs.includes('rh_academy') ? 0.85 : 1.0;
+    const rhDiscount = unlockedTechs.includes('rh_academy') ? 0.88 : 1.0;
     return Math.round(tier.baseCost * Math.pow(tier.costMult, opens) * rhDiscount);
   };
 
@@ -1126,22 +1229,21 @@ export default function App() {
             const part = PARTS_CATALOG.find(p => p.id === slot.partId) || PARTS_CATALOG[0];
             if (!machine || !part) return slot;
 
-            // Bonus opérateur
             let empMult = 0;
             let empQual = 0;
             if (slot.employeeId) {
               const emp = EMPLOYEES_CATALOG.find(e => e.id === slot.employeeId);
               const owned = inventory[slot.employeeId];
               if (emp && owned) {
-                const starBoost = 1 + ((owned.stars || 1) - 1) * 0.35;
-                const specBoost = emp.specialty === machine.id ? 1.5 : 1.0;
+                const starBoost = 1 + ((owned.stars || 1) - 1) * 0.28;
+                const specBoost = emp.specialty === machine.id ? 1.4 : 1.0;
                 empMult = emp.baseMult * starBoost * specBoost;
                 empQual = emp.qualBonus;
               }
             }
 
             const effectiveSpeed = Math.max(0.2, machine.speedMult * (1 + modifiers.speedBonus + empMult));
-            const cycleDuration = Math.max(0.5, part.baseCycleSec / effectiveSpeed);
+            const cycleDuration = Math.max(0.8, part.baseCycleSec / effectiveSpeed);
             const neededKg = part.kgPerPart * machine.batchSize;
 
             if (slot.progress === 0 && (nextMat[part.materialId] || 0) < neededKg) {
@@ -1153,7 +1255,7 @@ export default function App() {
               if ((nextMat[part.materialId] || 0) >= neededKg) {
                 nextMat[part.materialId] = Number((nextMat[part.materialId] - neededKg).toFixed(3));
                 const rawQual = Math.min(100, Math.max(30, machine.baseQuality + modifiers.qualBonus + empQual));
-                const defectChance = Math.max(0.01, (100 - rawQual) / 160 * (1 - modifiers.defectReduction));
+                const defectChance = Math.max(0.015, ((100 - rawQual) / 145) * (1 - modifiers.defectReduction));
                 const isConforming = Math.random() > defectChance;
                 newlyProduced.push({
                   partId: part.id,
@@ -1186,7 +1288,7 @@ export default function App() {
 
               if (autoSell && item.inspected && item.isConforming) {
                 const part = PARTS_CATALOG.find(p => p.id === item.partId);
-                const unitVal = (part?.sellPrice || 10) * (1 + modifiers.priceBonus + certBonus) * (item.quality / 85);
+                const unitVal = (part?.sellPrice || 5) * (1 + modifiers.priceBonus + certBonus) * (item.quality / 90);
                 autoSoldRevenue += unitVal * item.qty;
                 autoSoldQty += item.qty;
               } else {
@@ -1227,75 +1329,62 @@ export default function App() {
     return () => clearInterval(interval);
   }, [modifiers, certBonus, autoSell, autoInspect, inventory]);
 
-  // Sauvegarde automatique locale + Cloud Firebase toutes les 6s
+  // --- SAUVEGARDE IMMÉDIATE SUR CHANGEMENTS CLÉS + FERMETURE ONGLET/APP ---
   useEffect(() => {
-    const saveTimer = setInterval(async () => {
-      const payload = {
-        money: secureVaultRef.current.money,
-        researchPoints: secureVaultRef.current.rp,
-        clickLevel,
-        slots,
-        materialStock,
-        partLots,
-        autoSell,
-        metrologyOwned,
-        activeMetroId,
-        autoInspect,
-        reputation,
-        repMetrics,
-        unlockedTechs,
-        inventory,
-        crateOpens,
-        contracts,
-        claimedMissions,
-        stats,
-        atelier,
-        updatedAt: Date.now()
-      };
-      localStorage.setItem(SAVE_STORAGE_KEY, encodeSecureSave(payload));
+    if (!isHydratedRef.current) return;
+    const payload = persistLocalNow(pseudo);
+    latestStateRef.current = payload;
+  }, [clickLevel, slots, materialStock, partLots, autoSell, metrologyOwned, activeMetroId, autoInspect, reputation, repMetrics, unlockedTechs, inventory, crateOpens, contracts, claimedMissions, stats, atelier, pseudo]);
 
-      if (db && isLoggedIn && pseudo) {
-        const cleanId = pseudo.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_');
-        try {
-          await setDoc(doc(db, 'artifacts', SEASON_APP_ID, 'public', 'data', 'leaderboard', cleanId), {
-            pseudo,
-            money: Math.round(secureVaultRef.current.money),
-            reputation: Math.round(reputation),
-            partsProduced: stats.partsProduced,
-            updatedAt: Date.now()
-          }, { merge: true });
-        } catch {
-          // Ignorer en mode hors-ligne
-        }
-      }
-    }, 6000);
+  useEffect(() => {
+    const saveTimer = setInterval(() => {
+      const payload = persistLocalNow(pseudo);
+      if (payload) syncFullSaveToCloud(payload, false);
+    }, 2500);
     return () => clearInterval(saveTimer);
   }, [clickLevel, slots, materialStock, partLots, autoSell, metrologyOwned, activeMetroId, autoInspect, reputation, repMetrics, unlockedTechs, inventory, crateOpens, contracts, claimedMissions, stats, atelier, isLoggedIn, pseudo]);
 
+  useEffect(() => {
+    const flushSaveOnLeave = () => {
+      const payload = persistLocalNow(pseudo);
+      if (payload) syncFullSaveToCloud(payload, true);
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === 'hidden') flushSaveOnLeave();
+    };
+    window.addEventListener('beforeunload', flushSaveOnLeave);
+    window.addEventListener('pagehide', flushSaveOnLeave);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.removeEventListener('beforeunload', flushSaveOnLeave);
+      window.removeEventListener('pagehide', flushSaveOnLeave);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [pseudo, isLoggedIn]);
+
   // --- ACTIONS JOUEUR ---
   const handleManualMachining = (e) => {
-    // Bloque l'activation par touche Entrée ou Espace (e.detail === 0)
     if (e && typeof e.detail === 'number' && e.detail === 0) return;
     const now = Date.now();
-    if (now - secureVaultRef.current.lastClickTs < 65) return; // Anti-auto-clicker
+    if (now - secureVaultRef.current.lastClickTs < 85) return;
     secureVaultRef.current.lastClickTs = now;
 
-    setSpindleRpm(prev => Math.min(6000, prev + 1450));
+    setSpindleRpm(prev => Math.min(6000, prev + 1350));
     setSpindleSparks(true);
     setTimeout(() => setSpindleSparks(false), 180);
 
-    const qty = Math.max(1, Math.floor(1 + (clickLevel - 1) * 0.5));
-    const qual = Math.min(98, 76 + clickLevel * 2);
+    const qty = Math.min(5, 1 + Math.floor((clickLevel - 1) / 2));
+    const qual = Math.min(92, 74 + clickLevel * 2);
     setPartLots(prev => {
-      const idx = prev.findIndex(l => l.partId === 'spacer_alu' && l.inspected && l.isConforming);
+      const idx = prev.findIndex(l => l.partId === 'spacer_alu' && !l.inspected && l.isConforming);
       if (idx >= 0) {
         const copy = [...prev];
         copy[idx] = { ...copy[idx], qty: copy[idx].qty + qty };
         return copy;
       }
-      return [...prev, { id: `lot_${now}`, partId: 'spacer_alu', qty, quality: qual, inspected: true, isConforming: true }];
+      return [...prev, { id: `lot_${now}`, partId: 'spacer_alu', qty, quality: qual, inspected: false, isConforming: true }];
     });
-    setStats(s => ({ ...s, partsProduced: s.partsProduced + qty, partsInspected: s.partsInspected + qty }));
+    setStats(s => ({ ...s, partsProduced: s.partsProduced + qty }));
   };
 
   const handleUpgradeManual = () => {
@@ -1333,13 +1422,13 @@ export default function App() {
     if (!lot.inspected) return addToast('Contrôlez d’abord ce lot en Métrologie !', 'error');
     const part = PARTS_CATALOG.find(p => p.id === lot.partId);
     if (lot.isConforming) {
-      const unitVal = (part?.sellPrice || 10) * (1 + modifiers.priceBonus + certBonus) * (lot.quality / 85);
+      const unitVal = (part?.sellPrice || 5) * (1 + modifiers.priceBonus + certBonus) * (lot.quality / 90);
       const gain = unitVal * lot.qty;
       adjustMoney(gain);
       setStats(s => ({ ...s, partsSold: s.partsSold + lot.qty, totalRevenue: s.totalRevenue + gain }));
       addToast(`Lot vendu : +${formatMoney(gain)}`, 'success');
     } else {
-      const scrapVal = (part?.sellPrice || 10) * 0.2 * lot.qty;
+      const scrapVal = (part?.sellPrice || 5) * 0.15 * lot.qty;
       adjustMoney(scrapVal);
       addToast(`Rebuts recyclés : +${formatMoney(scrapVal)}`, 'info');
     }
@@ -1353,14 +1442,14 @@ export default function App() {
     partLots.forEach(lot => {
       if (lot.inspected && lot.isConforming) {
         const part = PARTS_CATALOG.find(p => p.id === lot.partId);
-        const unitVal = (part?.sellPrice || 10) * (1 + modifiers.priceBonus + certBonus) * (lot.quality / 85);
+        const unitVal = (part?.sellPrice || 5) * (1 + modifiers.priceBonus + certBonus) * (lot.quality / 90);
         totalGain += unitVal * lot.qty;
         totalQty += lot.qty;
       } else {
         remaining.push(lot);
       }
     });
-    if (totalQty === 0) return addToast('Aucun lot conforme prêt à expédier.', 'info');
+    if (totalQty === 0) return addToast('Aucun lot conforme contrôlé prêt à expédier.', 'info');
     adjustMoney(totalGain);
     setPartLots(remaining);
     setStats(s => ({ ...s, partsSold: s.partsSold + totalQty, totalRevenue: s.totalRevenue + totalGain }));
@@ -1380,7 +1469,7 @@ export default function App() {
     );
     if (count > 0) {
       setStats(s => ({ ...s, partsInspected: s.partsInspected + count }));
-      addToast(`${count} pièces contrôlées avec succès.`, 'success');
+      addToast(`${count} pièces contrôlées au laboratoire.`, 'success');
     }
   };
 
@@ -1392,7 +1481,6 @@ export default function App() {
       return addToast(`Stock conforme insuffisant (${totalAvail}/${ctr.qty} ${part?.name}).`, 'error');
     }
 
-    // Probabilité selon l'offre tarifaire
     const winChance = Math.max(0.25, Math.min(1.0, 1.35 - ctr.bidMult * 0.35 + reputation / 250));
     if (Math.random() > winChance) {
       addToast(`Offre rejetée par ${ctr.client} (prix trop élevé).`, 'error');
@@ -1415,16 +1503,16 @@ export default function App() {
     const payout = Math.round(ctr.baseReward * ctr.bidMult);
     adjustMoney(payout);
     adjustRP(ctr.rpReward);
-    setReputation(r => Math.min(100, r + 3));
+    setReputation(r => Math.min(100, r + 2));
     setRepMetrics(m => ({
       quality: Math.min(100, m.quality + 2),
-      reliability: Math.min(100, m.reliability + 3),
+      reliability: Math.min(100, m.reliability + 2),
       innovation: Math.min(100, m.innovation + 2),
-      capacity: Math.min(100, m.capacity + 3),
-      delivery: Math.min(100, m.delivery + 3)
+      capacity: Math.min(100, m.capacity + 2),
+      delivery: Math.min(100, m.delivery + 2)
     }));
     setStats(s => ({ ...s, contractsCompleted: s.contractsCompleted + 1, partsSold: s.partsSold + ctr.qty, totalRevenue: s.totalRevenue + payout }));
-    setContracts(prev => prev.map(c => (c.id === ctr.id ? generateContractOffer(reputation + 3, unlockedTechs) : c)));
+    setContracts(prev => prev.map(c => (c.id === ctr.id ? generateContractOffer(reputation + 2, unlockedTechs) : c)));
     addToast(`Contrat ${ctr.client} livré : +${formatMoney(payout)} & +${ctr.rpReward} RP !`, 'success');
   };
 
@@ -1485,7 +1573,8 @@ export default function App() {
       });
       setIsOpeningCrate(false);
       setLastCrateDrop(emp);
-    }, 650);
+      setShowCrateRevealModal(true);
+    }, 850);
   };
 
   const handleMergeCard = (empId) => {
@@ -1502,14 +1591,41 @@ export default function App() {
   const fetchLeaderboard = async () => {
     if (!db) return;
     try {
-      const q = query(collection(db, 'artifacts', SEASON_APP_ID, 'public', 'data', 'leaderboard'), limit(30));
+      const q = query(collection(db, 'artifacts', SEASON_APP_ID, 'public', 'data', 'leaderboard'), limit(50));
       const snap = await getDocs(q);
       const list = snap.docs.map(d => d.data()).sort((a, b) => (b.money || 0) - (a.money || 0));
       setLeaderboard(list);
     } catch {
-      addToast('Classement indisponible hors-ligne.', 'info');
+      // Silencieux en mode hors-ligne
     }
   };
+
+  const syncAndFetchLeaderboard = async (playerPseudo = pseudo, playerMoney = secureVaultRef.current.money, playerRep = reputation, playerParts = stats.partsProduced) => {
+    if (!db || !playerPseudo) return;
+    const cleanId = playerPseudo.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+    try {
+      await setDoc(doc(db, 'artifacts', SEASON_APP_ID, 'public', 'data', 'leaderboard', cleanId), {
+        pseudo: playerPseudo.trim(),
+        money: Math.round(playerMoney),
+        reputation: Math.round(playerRep),
+        partsProduced: playerParts,
+        updatedAt: Date.now()
+      }, { merge: true });
+      await fetchLeaderboard();
+    } catch {
+      // Mode hors-ligne
+    }
+  };
+
+  useEffect(() => {
+    if (isLoggedIn && pseudo) {
+      restoreFromCloudIfNewer(pseudo, password).then(() => {
+        const snap = persistLocalNow(pseudo);
+        if (snap) syncFullSaveToCloud(snap, true);
+        fetchLeaderboard();
+      });
+    }
+  }, [isLoggedIn, pseudo, firebaseUser]);
 
   useEffect(() => {
     if (activeTab === 'leaderboard') fetchLeaderboard();
@@ -1524,12 +1640,27 @@ export default function App() {
       setAuthError('Pseudo (2 car. min) et mot de passe (3 car. min) requis.');
       return;
     }
+
+    const cloudStatus = await restoreFromCloudIfNewer(p, pw);
+    if (cloudStatus === 'WRONG_PASSWORD') {
+      setAuthError('Mot de passe incorrect pour ce pseudo GMP.');
+      return;
+    }
+
+    if (!cloudStatus) {
+      const localExisting = loadBestLocalSave(p);
+      if (localExisting) applySavedState(localExisting);
+    }
+
     localStorage.setItem('cnc_pseudo', p);
     localStorage.setItem('cnc_password', pw);
     setPseudo(p);
     setPassword(pw);
     setIsLoggedIn(true);
     setAuthError('');
+    const snap = persistLocalNow(p);
+    if (snap) await syncFullSaveToCloud(snap, true);
+    await fetchLeaderboard();
   };
 
   if (!isLoggedIn) {
@@ -1589,10 +1720,10 @@ export default function App() {
     const sizeObj = ATELIER_UPGRADES.sizes.find(s => s.id === atelier.sizeId) || ATELIER_UPGRADES.sizes[0];
     const floorObj = ATELIER_UPGRADES.floors.find(f => f.id === atelier.floorId) || ATELIER_UPGRADES.floors[0];
     const readyPartsCount = partLots.filter(l => l.inspected && l.isConforming).reduce((a, b) => a + b.qty, 0);
+    const uninspectedCount = partLots.filter(l => !l.inspected).reduce((a, b) => a + b.qty, 0);
 
     return (
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* COCKPIT D'USINAGE MANUEL */}
         <div className="lg:col-span-4 bg-slate-900/95 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between space-y-4">
           <div>
             <div className="flex items-center justify-between mb-2">
@@ -1603,7 +1734,7 @@ export default function App() {
             <div className="text-center mt-2">
               <div className="text-xs font-black text-cyan-300">{spindleRpm} RPM</div>
               <p className="text-[11px] text-slate-400 mt-1">
-                Cliquez avec la souris pour usiner des <b className="text-slate-200">Entretoises Aluminium</b> prêtes à vendre.
+                Cliquez avec la souris pour usiner des <b className="text-slate-200">Entretoises Aluminium</b> (à contrôler en Métrologie avant vente).
               </p>
             </div>
           </div>
@@ -1614,7 +1745,7 @@ export default function App() {
               onClick={handleManualMachining}
               className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-sky-500 to-cyan-600 hover:from-sky-400 hover:to-cyan-500 active:scale-[0.99] text-white font-black text-sm shadow-lg shadow-sky-500/20 transition-all select-none"
             >
-              USINER UNE PIÈCE (+{Math.max(1, Math.floor(1 + (clickLevel - 1) * 0.5))})
+              USINER UNE PIÈCE (+{Math.min(5, 1 + Math.floor((clickLevel - 1) / 2))})
             </button>
             <button
               type="button"
@@ -1629,6 +1760,15 @@ export default function App() {
               <span>Outillage Carbure Niv.{clickLevel + 1}</span>
               <span>{formatMoney(manualUpgradeCost)}</span>
             </button>
+            {uninspectedCount > 0 && (
+              <button
+                type="button"
+                onClick={handleInspectAll}
+                className="w-full py-2 rounded-xl bg-amber-600/30 border border-amber-500/50 hover:bg-amber-600/40 text-amber-300 font-black text-xs"
+              >
+                Contrôler en Métrologie ({uninspectedCount} pcs)
+              </button>
+            )}
             {readyPartsCount > 0 && (
               <button
                 type="button"
@@ -1641,7 +1781,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* PLAN 2D INTERACTIF DE L'ATELIER */}
         <div className="lg:col-span-8 bg-slate-900/95 border border-slate-800 rounded-2xl p-4 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
@@ -1727,7 +1866,6 @@ export default function App() {
 
     return (
       <div className="space-y-4">
-        {/* CATALOGUE D'ACHAT DE MACHINES */}
         <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4">
           <h2 className="text-base font-black text-white mb-3 flex items-center gap-2">
             <Cog className="w-5 h-5 text-sky-400" /> Acheter &amp; Installer une Machine-Outil
@@ -1771,7 +1909,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* CONFIGURATION DES ÎLOTS ACTIFS */}
         <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4 space-y-3">
           <h3 className="text-base font-black text-white">Pilotage des Îlots Installés</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -1856,7 +1993,6 @@ export default function App() {
 
   const renderStocks = () => (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-      {/* MATIÈRES PREMIÈRES */}
       <div className="lg:col-span-5 bg-slate-900/95 border border-slate-800 rounded-2xl p-4 space-y-3">
         <h2 className="text-base font-black text-white flex items-center gap-2">
           <Package className="w-5 h-5 text-amber-400" /> Approvisionnement Matières Premières
@@ -1866,7 +2002,7 @@ export default function App() {
             const unlocked = !mat.reqTech || unlockedTechs.includes(mat.reqTech);
             const stock = Number(materialStock[mat.id] || 0);
             const cost10 = Math.round(mat.costPerKg * 10);
-            const cost50 = Math.round(mat.costPerKg * 50 * 0.92);
+            const cost50 = Math.round(mat.costPerKg * 50 * 0.94);
             return (
               <div key={mat.id} className={`p-3 rounded-xl border ${unlocked ? 'bg-slate-950/90 border-slate-800' : 'bg-slate-950/40 border-slate-900 opacity-60'}`}>
                 <div className="flex items-center justify-between mb-2">
@@ -1907,7 +2043,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* LOTS PRODUITS FINIS & EXPÉDITIONS */}
       <div className="lg:col-span-7 bg-slate-900/95 border border-slate-800 rounded-2xl p-4 space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-base font-black text-white">Lots Produits Finis &amp; Ventes</h2>
@@ -1935,7 +2070,7 @@ export default function App() {
           <div className="space-y-2">
             {partLots.map(lot => {
               const part = PARTS_CATALOG.find(p => p.id === lot.partId);
-              const unitVal = (part?.sellPrice || 10) * (1 + modifiers.priceBonus + certBonus) * (lot.quality / 85);
+              const unitVal = (part?.sellPrice || 5) * (1 + modifiers.priceBonus + certBonus) * (lot.quality / 90);
               return (
                 <div key={lot.id} className="p-3 rounded-xl bg-slate-950/90 border border-slate-800 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
@@ -2044,7 +2179,6 @@ export default function App() {
           })}
         </div>
 
-        {/* CERTIFICATIONS INDUSTRIELLES */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           {CERTIFICATIONS_CATALOG.map(c => {
             const metroIdx = METROLOGY_CATALOG.findIndex(m => m.id === activeMetroId);
@@ -2213,7 +2347,6 @@ export default function App() {
         </div>
 
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
-          {/* VUE CONSTELLATION PC */}
           <div className="hidden md:block xl:col-span-8 bg-[#050811] border border-slate-800 rounded-2xl p-3 relative overflow-hidden shadow-2xl">
             <svg viewBox="0 0 1000 560" className="w-full h-auto select-none">
               <defs>
@@ -2370,7 +2503,6 @@ export default function App() {
             </svg>
           </div>
 
-          {/* VUE MOBILE */}
           <div className="md:hidden bg-slate-900/95 border border-slate-800 rounded-2xl p-3 space-y-3">
             <div className="flex gap-1.5 overflow-x-auto pb-1">
               {branches.map(b => (
@@ -2410,7 +2542,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* PANNEAU D'INSPECTION */}
           <div className="xl:col-span-4 bg-slate-900/95 border border-slate-700 rounded-2xl p-4 flex flex-col justify-between">
             <div className="space-y-3">
               <div className="flex items-center justify-between">
@@ -2622,12 +2753,15 @@ export default function App() {
           </div>
 
           {lastCrateDrop && (
-            <div className={`mt-4 p-4 rounded-2xl border-2 bg-slate-950/95 flex flex-wrap items-center justify-between gap-4 shadow-xl ${RARITY_CONFIG[lastCrateDrop.rarity].border}`}>
+            <div
+              onClick={() => setShowCrateRevealModal(true)}
+              className={`mt-4 p-4 rounded-2xl border-2 bg-slate-950/95 flex flex-wrap items-center justify-between gap-4 shadow-xl cursor-pointer hover:scale-[1.01] transition-transform ${RARITY_CONFIG[lastCrateDrop.rarity].border}`}
+            >
               <div className="flex items-center gap-3">
                 <CharacterPortrait emp={lastCrateDrop} sizeClass="w-16 h-16" />
                 <div>
                   <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full border ${RARITY_CONFIG[lastCrateDrop.rarity].badge}`}>
-                    Nouvelle recrue : {RARITY_CONFIG[lastCrateDrop.rarity].label}
+                    Dernière recrue : {RARITY_CONFIG[lastCrateDrop.rarity].label}
                   </span>
                   <h3 className="text-base font-black text-white mt-1">{lastCrateDrop.name}</h3>
                   <p className="text-xs text-slate-400">{lastCrateDrop.role} • {lastCrateDrop.specialtyLabel || 'Polyvalent'}</p>
@@ -2904,7 +3038,7 @@ export default function App() {
         </div>
 
         <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4 space-y-2.5">
-          <h3 className="text-sm font-black text-white">Logistique &amp; Infrastructures Lourde</h3>
+          <h3 className="text-sm font-black text-white">Logistique &amp; Infrastructures Lourdes</h3>
           {ATELIER_UPGRADES.extras.map(ex => {
             const owned = atelier.extras.includes(ex.id);
             return (
@@ -2936,55 +3070,121 @@ export default function App() {
   );
 
   const renderLeaderboard = () => (
-    <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4 space-y-3">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-base font-black text-white flex items-center gap-2">
-            <Trophy className="w-5 h-5 text-amber-400" /> Classement Général GMP (Saison 2)
-          </h2>
-          <p className="text-xs text-slate-400">Connecté en tant que <b className="text-sky-400">{pseudo}</b></p>
+    <div className="space-y-4">
+      <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-base font-black text-white flex items-center gap-2">
+              <Save className="w-5 h-5 text-emerald-400" /> Sécurité &amp; Sauvegarde de votre Progression
+            </h2>
+            <p className="text-xs text-slate-400">
+              Sauvegarde automatique double-miroir + Cloud GMP • Dernière écriture :{' '}
+              <b className="text-emerald-300">{lastSavedAt ? new Date(lastSavedAt).toLocaleTimeString() : 'Active'}</b>
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={async () => {
+                const snap = persistLocalNow(pseudo);
+                if (snap) await syncFullSaveToCloud(snap, true);
+                addToast('Partie sauvegardée (Local + Cloud GMP) !', 'success');
+              }}
+              className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black flex items-center gap-1.5"
+            >
+              <Save className="w-3.5 h-3.5" /> Sauvegarder Maintenant
+            </button>
+            <button
+              onClick={() => {
+                const snap = persistLocalNow(pseudo);
+                if (!snap) return;
+                const code = encodeSecureSave(snap);
+                if (navigator.clipboard) navigator.clipboard.writeText(code).catch(() => {});
+                setImportCodeText(code);
+                addToast('Code de sauvegarde copié dans le presse-papiers !', 'success');
+              }}
+              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-sky-300 text-xs font-black flex items-center gap-1.5"
+            >
+              <Download className="w-3.5 h-3.5" /> Exporter Code
+            </button>
+          </div>
         </div>
-        <div className="flex gap-2">
-          <button onClick={fetchLeaderboard} className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold flex items-center gap-1.5">
-            <RefreshCw className="w-3.5 h-3.5" /> Actualiser
-          </button>
+
+        <div className="flex flex-col sm:flex-row gap-2">
+          <input
+            type="text"
+            value={importCodeText}
+            onChange={e => setImportCodeText(e.target.value)}
+            placeholder="Collez ici un code GMPSEC2... pour restaurer une sauvegarde"
+            className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 outline-none focus:border-sky-500"
+          />
           <button
             onClick={() => {
-              localStorage.removeItem('cnc_pseudo');
-              setIsLoggedIn(false);
+              const decoded = decodeSecureSave(importCodeText.trim());
+              if (!decoded) return addToast('Code de sauvegarde invalide ou corrompu.', 'error');
+              applySavedState(decoded);
+              const snap = persistLocalNow(pseudo);
+              if (snap) syncFullSaveToCloud(snap, true);
+              addToast('Sauvegarde restaurée avec succès !', 'success');
             }}
-            className="px-3 py-1.5 rounded-xl bg-rose-950/60 border border-rose-800 text-rose-300 text-xs font-bold flex items-center gap-1.5"
+            className="px-3.5 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-black flex items-center justify-center gap-1.5"
           >
-            <LogOut className="w-3.5 h-3.5" /> Déconnexion
+            <Upload className="w-3.5 h-3.5" /> Restaurer
           </button>
         </div>
       </div>
 
-      <div className="space-y-2">
-        {leaderboard.length === 0 ? (
-          <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300 flex justify-between">
-            <span>#1 {pseudo} (Vous)</span>
-            <span className="font-black text-emerald-400">{formatMoney(money)} • Rép {reputation}/100</span>
+      <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-black text-white flex items-center gap-2">
+              <Trophy className="w-5 h-5 text-amber-400" /> Classement Général GMP (Saison 2)
+            </h2>
+            <p className="text-xs text-slate-400">Connecté en tant que <b className="text-sky-400">{pseudo}</b></p>
           </div>
-        ) : (
-          leaderboard.map((row, idx) => (
-            <div
-              key={`${row.pseudo}_${idx}`}
-              className={`p-3 rounded-xl border flex items-center justify-between text-xs ${
-                row.pseudo === pseudo ? 'bg-sky-950/40 border-sky-500' : 'bg-slate-950 border-slate-800'
-              }`}
+          <div className="flex gap-2">
+            <button onClick={fetchLeaderboard} className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold flex items-center gap-1.5">
+              <RefreshCw className="w-3.5 h-3.5" /> Actualiser
+            </button>
+            <button
+              onClick={async () => {
+                const snap = persistLocalNow(pseudo);
+                if (snap) await syncFullSaveToCloud(snap, true);
+                localStorage.removeItem('cnc_pseudo');
+                setIsLoggedIn(false);
+              }}
+              className="px-3 py-1.5 rounded-xl bg-rose-950/60 border border-rose-800 text-rose-300 text-xs font-bold flex items-center gap-1.5"
             >
-              <div className="flex items-center gap-2.5 font-black">
-                <span className="text-amber-400 w-6">#{idx + 1}</span>
-                <span className="text-white">{row.pseudo}</span>
-              </div>
-              <div className="flex items-center gap-4">
-                <span className="text-slate-400">{row.partsProduced || 0} pcs</span>
-                <span className="text-emerald-400 font-black">{formatMoney(row.money || 0)}</span>
-              </div>
+              <LogOut className="w-3.5 h-3.5" /> Déconnexion
+            </button>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          {leaderboard.length === 0 ? (
+            <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300 flex justify-between">
+              <span>#1 {pseudo} (Vous)</span>
+              <span className="font-black text-emerald-400">{formatMoney(money)} • Rép {reputation}/100</span>
             </div>
-          ))
-        )}
+          ) : (
+            leaderboard.map((row, idx) => (
+              <div
+                key={`${row.pseudo}_${idx}`}
+                className={`p-3 rounded-xl border flex items-center justify-between text-xs ${
+                  row.pseudo === pseudo ? 'bg-sky-950/40 border-sky-500' : 'bg-slate-950 border-slate-800'
+                }`}
+              >
+                <div className="flex items-center gap-2.5 font-black">
+                  <span className="text-amber-400 w-6">#{idx + 1}</span>
+                  <span className="text-white">{row.pseudo}</span>
+                </div>
+                <div className="flex items-center gap-4">
+                  <span className="text-slate-400">{row.partsProduced || 0} pcs</span>
+                  <span className="text-emerald-400 font-black">{formatMoney(row.money || 0)}</span>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
       </div>
     </div>
   );
@@ -2995,34 +3195,64 @@ export default function App() {
   const readyMissionCount = MISSIONS_CATALOG.filter(
     m => !claimedMissions.includes(m.id) && Number(stats[m.statKey] || 0) >= m.target
   ).length;
+  const uninspectedAlertCount = partLots.filter(l => !l.inspected).reduce((a, b) => a + b.qty, 0);
+  const readyPartsAlertCount = partLots.filter(l => l.inspected && l.isConforming).reduce((a, b) => a + b.qty, 0);
+  const noMatSlotsCount = slots.filter(s => s.status === 'NO_MAT').length;
+
+  const navItems = [
+    { id: 'workshop', label: 'Atelier', sub: 'Plan 2D', icon: Wrench, color: 'text-sky-400', activeBg: 'from-sky-600 to-blue-600', badge: 0 },
+    { id: 'machines', label: 'Machines', sub: `${slots.filter(s => s.machineId).length}/${slots.length} îlots`, icon: Cog, color: 'text-cyan-400', activeBg: 'from-cyan-600 to-sky-600', badge: noMatSlotsCount },
+    { id: 'stocks', label: 'Stocks', sub: 'Matières & Lots', icon: Package, color: 'text-amber-400', activeBg: 'from-amber-600 to-orange-600', badge: readyPartsAlertCount > 0 ? 1 : 0 },
+    { id: 'metrology', label: 'Métrologie', sub: 'Contrôle', icon: Gauge, color: 'text-emerald-400', activeBg: 'from-emerald-600 to-teal-600', badge: uninspectedAlertCount },
+    { id: 'contracts', label: 'Contrats', sub: `Rép ${reputation}`, icon: FileSpreadsheet, color: 'text-indigo-400', activeBg: 'from-indigo-600 to-blue-600', badge: 0 },
+    { id: 'gacha', label: 'Cartes RH', sub: 'Recrutement', icon: Gift, color: 'text-pink-400', activeBg: 'from-pink-600 to-rose-600', badge: 0 },
+    { id: 'atelier', label: 'Locaux', sub: 'Bâtiments', icon: Building2, color: 'text-orange-400', activeBg: 'from-orange-600 to-amber-600', badge: 0 },
+    { id: 'leaderboard', label: 'Classement', sub: 'Top GMP', icon: Trophy, color: 'text-yellow-400', activeBg: 'from-yellow-600 to-amber-600', badge: 0 }
+  ];
 
   const tutorialSteps = [
     {
-      title: '1. Usinage Manuel & Premiers Revenus',
-      text: 'Dans Atelier & Plan 2D, cliquez sur "USINER UNE PIÈCE" pour produire vos premières entretoises en Aluminium, puis cliquez sur "Vendre le Stock Conforme".'
+      title: '1. Usinage Manuel & Contrôle Qualité',
+      text: 'Dans Atelier, cliquez sur "USINER UNE PIÈCE" pour produire des entretoises en Aluminium, contrôlez-les en Métrologie puis vendez-les dans Stocks.'
     },
     {
       title: '2. Parc Machines & Matières Premières',
-      text: 'Achetez un Tour Conventionnel dans Parc Machines, puis commandez des barres d’Aluminium et d’Acier dans Stocks & Ventes pour alimenter vos cycles.'
+      text: 'Achetez votre première Perceuse ou Tour Conventionnel dans Machines, et gérez vos stocks d’Aluminium et d’Acier dans Stocks.'
     },
     {
       title: '3. Constellation R&D & Recrutement RH',
-      text: 'Ouvrez la Constellation R&D en haut à droite pour débloquer les centres 5 Axes, le Titane, la Fonderie Laser SLM-900 et les Caisses RH d’élite.'
+      text: 'Débloquez les nouvelles technologies dans la Constellation R&D (bouton en haut) et recrutez vos opérateurs dans Cartes RH.'
     },
     {
       title: '4. Métrologie & Appels d’Offres',
-      text: 'Contrôlez la qualité de vos pièces au laboratoire et livrez des séries aux grands groupes (Airbus, Safran, ArianeGroup) pour gagner des Points R&D.'
+      text: 'Livrez des séries conformes aux grands industriels (Airbus, Safran, ArianeGroup) pour gagner des Points R&D et grimper en réputation.'
     }
   ];
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
-      {/* NOTIFICATIONS TOAST */}
-      <div className="fixed bottom-4 right-4 z-50 space-y-2 pointer-events-none">
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col pb-20 md:pb-6">
+      <style>{`
+        @keyframes cardPopIn {
+          0% { opacity: 0; transform: scale(0.45) rotateY(90deg) translateY(30px); }
+          65% { opacity: 1; transform: scale(1.05) rotateY(-8deg) translateY(-4px); }
+          100% { opacity: 1; transform: scale(1) rotateY(0deg) translateY(0); }
+        }
+        @keyframes crateShake {
+          0%, 100% { transform: rotate(0deg) scale(1); }
+          20% { transform: rotate(-6deg) scale(1.06); }
+          40% { transform: rotate(6deg) scale(1.08); }
+          60% { transform: rotate(-4deg) scale(1.06); }
+          80% { transform: rotate(4deg) scale(1.04); }
+        }
+        .animate-card-reveal { animation: cardPopIn 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+        .animate-crate-shake { animation: crateShake 0.45s ease-in-out infinite; }
+      `}</style>
+
+      <div className="fixed top-16 right-3 z-50 space-y-2 pointer-events-none max-w-[90vw]">
         {toasts.map(t => (
           <div
             key={t.id}
-            className={`px-4 py-2.5 rounded-xl border text-xs font-black shadow-xl ${
+            className={`px-3.5 py-2 rounded-xl border text-xs font-black shadow-xl ${
               t.type === 'error'
                 ? 'bg-rose-950/95 border-rose-500 text-rose-200'
                 : t.type === 'success'
@@ -3035,7 +3265,70 @@ export default function App() {
         ))}
       </div>
 
-      {/* MODALE TUTORIEL RAPIDE */}
+      {/* MODALE ANIMÉE D'OUVERTURE DE COFFRE & APPARITION DE CARTE */}
+      {(isOpeningCrate || (showCrateRevealModal && lastCrateDrop)) && (
+        <div
+          onClick={() => { if (!isOpeningCrate) setShowCrateRevealModal(false); }}
+          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4"
+        >
+          {isOpeningCrate ? (
+            <div className="flex flex-col items-center text-center space-y-4">
+              <div className="animate-crate-shake">
+                <SupplyCrateSVG isOpening={true} rarityColor="#fbbf24" />
+              </div>
+              <div className="text-base font-black text-amber-300 tracking-wide uppercase animate-pulse">
+                Ouverture de la caisse de recrutement...
+              </div>
+            </div>
+          ) : lastCrateDrop && (
+            <div
+              onClick={e => e.stopPropagation()}
+              className={`animate-card-reveal max-w-xs w-full rounded-3xl border-2 bg-gradient-to-b from-slate-900 via-slate-950 to-slate-900 p-5 shadow-2xl text-center space-y-4 relative overflow-hidden ${RARITY_CONFIG[lastCrateDrop.rarity].border}`}
+            >
+              <div
+                className="absolute inset-0 opacity-20 pointer-events-none"
+                style={{ background: `radial-gradient(circle at 50% 25%, ${RARITY_CONFIG[lastCrateDrop.rarity].hex}, transparent 70%)` }}
+              />
+              <div className="relative z-10 flex flex-col items-center">
+                <span className={`text-[11px] font-black uppercase px-3 py-1 rounded-full border tracking-wider ${RARITY_CONFIG[lastCrateDrop.rarity].badge}`}>
+                  {RARITY_CONFIG[lastCrateDrop.rarity].label}
+                </span>
+
+                <div className="my-4 p-1.5 rounded-2xl bg-slate-900/90 border border-slate-700 shadow-xl">
+                  <CharacterPortrait emp={lastCrateDrop} sizeClass="w-28 h-28" />
+                </div>
+
+                <h3 className="text-xl font-black text-white">{lastCrateDrop.name}</h3>
+                <p className="text-xs text-cyan-300 font-bold mt-0.5">{lastCrateDrop.role}</p>
+                <p className="text-[11px] text-slate-400 mt-0.5">Spécialité : {lastCrateDrop.specialtyLabel || 'Toutes Machines'}</p>
+
+                <div className="w-full grid grid-cols-2 gap-2 mt-4 bg-slate-900/90 border border-slate-800 rounded-2xl p-3 text-xs">
+                  <div>
+                    <span className="text-[10px] text-slate-400 block uppercase font-bold">Cadence</span>
+                    <span className={`text-sm font-black ${lastCrateDrop.baseMult >= 0 ? 'text-emerald-400' : 'text-lime-400'}`}>
+                      {lastCrateDrop.baseMult >= 0 ? `+${Math.round(lastCrateDrop.baseMult * 100)}%` : `${Math.round(lastCrateDrop.baseMult * 100)}%`}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-400 block uppercase font-bold">Qualité</span>
+                    <span className="text-sm font-black text-sky-300">
+                      {lastCrateDrop.qualBonus >= 0 ? `+${lastCrateDrop.qualBonus}` : lastCrateDrop.qualBonus}
+                    </span>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => setShowCrateRevealModal(false)}
+                  className="mt-5 w-full py-3 rounded-2xl bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-black text-xs uppercase tracking-wider shadow-lg"
+                >
+                  Ajouter à mon Équipe
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {showTutorial && (
         <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
           <div className="max-w-md w-full bg-slate-900 border border-sky-500/50 rounded-3xl p-5 shadow-2xl space-y-4">
@@ -3084,47 +3377,51 @@ export default function App() {
         </div>
       )}
 
-      {/* BARRE SUPÉRIEURE */}
-      <header className="bg-slate-900/95 border-b border-slate-800 px-4 py-3 sticky top-0 z-30">
-        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-sky-500 to-blue-700 flex items-center justify-center font-black text-white shadow-lg">
+      {/* EN-TÊTE COMPACT & ERGONOMIQUE MOBILE/PC */}
+      <header className="bg-slate-900/95 border-b border-slate-800 px-3 sm:px-4 py-2.5 sticky top-0 z-30 backdrop-blur">
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-sky-500 to-blue-700 flex items-center justify-center font-black text-sm text-white shadow-lg shrink-0">
               GMP
             </div>
-            <div>
-              <h1 className="text-base sm:text-lg font-black tracking-tight text-white">CNC Tycoon GMP</h1>
-              <p className="text-[11px] text-slate-400">Atelier Industriel &amp; Métrologie</p>
+            <div className="min-w-0">
+              <h1 className="text-sm sm:text-lg font-black tracking-tight text-white truncate">CNC Tycoon GMP</h1>
+              <p className="text-[10px] sm:text-[11px] text-slate-400 truncate">Joueur : <span className="text-sky-400 font-bold">{pseudo}</span></p>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
-            <div className="bg-emerald-950/70 border border-emerald-700/50 px-3 py-1.5 rounded-xl text-xs font-black text-emerald-300">
+          <div className="flex items-center gap-1.5 sm:gap-2">
+            <div className="bg-emerald-950/80 border border-emerald-700/60 px-2.5 py-1.5 rounded-xl text-xs font-black text-emerald-300 whitespace-nowrap">
               {formatMoney(money)}
             </div>
-            <div className="bg-purple-950/70 border border-purple-700/50 px-3 py-1.5 rounded-xl text-xs font-black text-purple-300">
+            <div className="bg-purple-950/80 border border-purple-700/60 px-2.5 py-1.5 rounded-xl text-xs font-black text-purple-300 whitespace-nowrap">
               {Math.floor(researchPoints)} RP
             </div>
             <button
               onClick={() => setActiveTab('tech')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-black border flex items-center gap-1.5 transition-all ${
+              className={`px-2.5 py-1.5 rounded-xl text-xs font-black border flex items-center gap-1 transition-all ${
                 activeTab === 'tech'
-                  ? 'bg-cyan-600 border-cyan-400 text-white'
+                  ? 'bg-cyan-600 border-cyan-400 text-white shadow-lg'
                   : 'bg-slate-800 border-slate-700 text-cyan-300 hover:bg-slate-700'
               }`}
+              title="Arbre R&D"
             >
-              <Cpu className="w-3.5 h-3.5" /> R&amp;D
+              <Cpu className="w-4 h-4" />
+              <span className="hidden sm:inline">R&amp;D</span>
             </button>
             <button
               onClick={() => setActiveTab('missions')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-black border flex items-center gap-1.5 relative transition-all ${
+              className={`px-2.5 py-1.5 rounded-xl text-xs font-black border flex items-center gap-1 relative transition-all ${
                 activeTab === 'missions'
-                  ? 'bg-amber-600 border-amber-400 text-white'
+                  ? 'bg-amber-600 border-amber-400 text-white shadow-lg'
                   : 'bg-slate-800 border-slate-700 text-amber-300 hover:bg-slate-700'
               }`}
+              title="Missions"
             >
-              <Trophy className="w-3.5 h-3.5" /> Missions
+              <Award className="w-4 h-4" />
+              <span className="hidden sm:inline">Missions</span>
               {readyMissionCount > 0 && (
-                <span className="ml-1 px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[10px]">
+                <span className="px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[10px]">
                   {readyMissionCount}
                 </span>
               )}
@@ -3139,35 +3436,67 @@ export default function App() {
           </div>
         </div>
 
-        {/* NAVIGATION DES ONGLETS */}
-        <nav className="max-w-7xl mx-auto mt-3 flex gap-1.5 overflow-x-auto pb-1">
-          {[
-            { id: 'workshop', label: 'Atelier & Plan 2D' },
-            { id: 'machines', label: 'Parc Machines' },
-            { id: 'stocks', label: 'Stocks & Ventes' },
-            { id: 'metrology', label: 'Métrologie' },
-            { id: 'contracts', label: "Appels d'Offres" },
-            { id: 'gacha', label: 'Coffres & Cartes' },
-            { id: 'atelier', label: 'Locaux & Sols' },
-            { id: 'leaderboard', label: 'Classement' }
-          ].map(tab => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
-                activeTab === tab.id
-                  ? 'bg-sky-600 text-white shadow'
-                  : 'bg-slate-800/80 text-slate-400 hover:text-white hover:bg-slate-800'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
+        {/* NAVIGATION VISUELLE DESKTOP & TABLETTE (CARTES AVEC ICÔNES) */}
+        <nav className="hidden md:grid max-w-7xl mx-auto mt-2.5 grid-cols-8 gap-1.5">
+          {navItems.map(tab => {
+            const IconComp = tab.icon;
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`p-2 rounded-xl border text-left transition-all relative flex items-center gap-2 ${
+                  isActive
+                    ? `bg-gradient-to-r ${tab.activeBg} border-white/30 text-white shadow-lg`
+                    : 'bg-slate-950/80 border-slate-800 text-slate-300 hover:bg-slate-800/90 hover:border-slate-700'
+                }`}
+              >
+                <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${isActive ? 'bg-black/20 text-white' : `bg-slate-900 ${tab.color}`}`}>
+                  <IconComp className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-xs font-black truncate">{tab.label}</div>
+                  <div className={`text-[10px] truncate ${isActive ? 'text-white/80' : 'text-slate-500'}`}>{tab.sub}</div>
+                </div>
+                {tab.badge > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 px-1.5 py-0.5 rounded-full bg-rose-500 text-white text-[9px] font-black shadow">
+                    {tab.badge > 99 ? '99+' : tab.badge}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </nav>
+
+        {/* RUBAN D'ACCÈS SECONDAIRE SUR MOBILE (POUR LES ONGLETS HORS BARRE INFÉRIEURE) */}
+        <div className="flex md:hidden gap-1.5 overflow-x-auto mt-2 pb-0.5 no-scrollbar">
+          {navItems.map(tab => {
+            const IconComp = tab.icon;
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black whitespace-nowrap flex items-center gap-1.5 border relative ${
+                  isActive
+                    ? `bg-gradient-to-r ${tab.activeBg} border-white/30 text-white shadow`
+                    : 'bg-slate-950/90 border-slate-800 text-slate-300'
+                }`}
+              >
+                <IconComp className={`w-3.5 h-3.5 ${isActive ? 'text-white' : tab.color}`} />
+                <span>{tab.label}</span>
+                {tab.badge > 0 && (
+                  <span className="px-1.5 rounded-full bg-rose-500 text-white text-[9px]">
+                    {tab.badge > 99 ? '99+' : tab.badge}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
       </header>
 
-      {/* CONTENU PRINCIPAL */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-4">
+      <main className="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-4">
         {activeTab === 'workshop' && renderWorkshop()}
         {activeTab === 'machines' && renderMachines()}
         {activeTab === 'stocks' && renderStocks()}
@@ -3179,6 +3508,35 @@ export default function App() {
         {activeTab === 'atelier' && renderAtelier()}
         {activeTab === 'leaderboard' && renderLeaderboard()}
       </main>
+
+      {/* BARRE DE NAVIGATION TACTILE INFÉRIEURE SUR TÉLÉPHONE */}
+      <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-slate-900/95 backdrop-blur border-t border-slate-800 px-1.5 py-1.5 grid grid-cols-5 gap-1">
+        {[
+          navItems[0], // Atelier
+          navItems[1], // Machines
+          navItems[2], // Stocks
+          navItems[3], // Métrologie
+          navItems[5]  // Cartes RH
+        ].map(tab => {
+          const IconComp = tab.icon;
+          const isActive = activeTab === tab.id;
+          return (
+            <button
+              key={`bottom_${tab.id}`}
+              onClick={() => setActiveTab(tab.id)}
+              className={`py-1.5 rounded-xl flex flex-col items-center justify-center relative transition-all ${
+                isActive ? 'bg-sky-600/25 text-sky-300 border border-sky-500/40' : 'text-slate-400'
+              }`}
+            >
+              <IconComp className={`w-4 h-4 ${isActive ? 'text-sky-400' : tab.color}`} />
+              <span className="text-[10px] font-black mt-0.5 truncate max-w-full px-1">{tab.label}</span>
+              {tab.badge > 0 && (
+                <span className="absolute top-0.5 right-2 w-2 h-2 rounded-full bg-rose-500" />
+              )}
+            </button>
+          );
+        })}
+      </nav>
     </div>
   );
 }
