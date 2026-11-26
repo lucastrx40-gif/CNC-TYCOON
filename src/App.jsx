@@ -3,6 +3,7 @@ import { initializeApp, getApps } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot } from 'firebase/firestore';
 import {
+  ArrowDownWideNarrow,
   Award,
   BookOpen,
   Check,
@@ -74,6 +75,7 @@ const MACHINES_CATALOG = [
 const RARITY_STYLES = {
   MALUS: {
     label: 'Malus',
+    rank: 0,
     gradient: 'from-lime-700 via-stone-700 to-zinc-950',
     border: 'border-lime-600',
     text: 'text-lime-400',
@@ -84,6 +86,7 @@ const RARITY_STYLES = {
   },
   COMMON: {
     label: 'Commun',
+    rank: 1,
     gradient: 'from-slate-500 via-slate-600 to-slate-800',
     border: 'border-slate-400',
     text: 'text-slate-300',
@@ -93,6 +96,7 @@ const RARITY_STYLES = {
   },
   RARE: {
     label: 'Rare',
+    rank: 2,
     gradient: 'from-cyan-400 via-blue-600 to-indigo-900',
     border: 'border-cyan-400',
     text: 'text-cyan-300',
@@ -102,6 +106,7 @@ const RARITY_STYLES = {
   },
   EPIC: {
     label: 'Épique',
+    rank: 3,
     gradient: 'from-fuchsia-500 via-purple-600 to-indigo-950',
     border: 'border-purple-400',
     text: 'text-purple-300',
@@ -111,6 +116,7 @@ const RARITY_STYLES = {
   },
   LEGENDARY: {
     label: 'Légendaire',
+    rank: 4,
     gradient: 'from-yellow-300 via-amber-500 to-orange-700',
     border: 'border-amber-300',
     text: 'text-amber-300',
@@ -120,6 +126,7 @@ const RARITY_STYLES = {
   },
   MYTHIC: {
     label: 'Mythique',
+    rank: 5,
     gradient: 'from-rose-400 via-red-600 to-slate-950',
     border: 'border-rose-400',
     text: 'text-rose-400',
@@ -129,6 +136,7 @@ const RARITY_STYLES = {
   },
   SECRET: {
     label: 'Secret',
+    rank: 6,
     gradient: 'from-emerald-300 via-teal-400 to-amber-400',
     border: 'border-emerald-300',
     text: 'text-emerald-300',
@@ -409,7 +417,6 @@ const INTEGRITY_SALT = 'GMP_CNC_2026_S2_X9#K7!vL';
 const SIGNED_SAVE_KEY = 'cnc_save_signed_v1';
 const MAX_CLICKS_PER_SEC = 14;
 
-// Empreinte FNV-1a déterministe pour détecter toute modification dans localStorage
 const computeIntegrityHash = (payload) => {
   const canonical = JSON.stringify({
     m: Math.round((Number(payload.money) || 0) * 100),
@@ -428,7 +435,6 @@ const computeIntegrityHash = (payload) => {
   return (hash >>> 0).toString(16).padStart(8, '0');
 };
 
-// Lecture sécurisée de la sauvegarde locale (vérifie la signature avant d'accepter les montants)
 const loadVerifiedLocalSave = () => {
   try {
     const raw = localStorage.getItem(SIGNED_SAVE_KEY);
@@ -439,7 +445,6 @@ const loadVerifiedLocalSave = () => {
       }
       return { data: null, tampered: true };
     }
-    // Migration unique depuis anciennes clés non signées si présentes
     const legacyMoney = Number(localStorage.getItem('cnc_money'));
     const legacyClick = Number(localStorage.getItem('cnc_clickLevel'));
     const legacySlots = JSON.parse(localStorage.getItem('cnc_slots') || 'null');
@@ -464,7 +469,6 @@ const loadVerifiedLocalSave = () => {
   return { data: null, tampered: false };
 };
 
-// Recalcul indépendant de la cadence maximale légitime (anti-injection classement)
 const computeVerifiedIncome = (slots, inventory, atelier) => {
   const sizeObj = ATELIER_UPGRADES.sizes.find((s) => s.level === (atelier?.sizeLevel || 1)) || ATELIER_UPGRADES.sizes[0];
   const bonus =
@@ -922,6 +926,7 @@ const TradingCard = ({
   dexIndex = null,
   locked = false,
   dropRate = null,
+  machineMatchMult = null,
   spriteSheetUrl
 }) => {
   const style = RARITY_STYLES[employee.rarity] || RARITY_STYLES.COMMON;
@@ -1023,7 +1028,13 @@ const TradingCard = ({
             {employee.specName}
           </div>
 
-          {isMalus ? (
+          {machineMatchMult !== null ? (
+            <div className="mt-1 flex items-center justify-center px-1 text-[10px] font-mono border-t border-slate-800 pt-1">
+              <span className={isMalus ? 'text-lime-400 font-black' : 'text-emerald-300 font-black'}>
+                Sur cette CNC : x{machineMatchMult.toFixed(2)}
+              </span>
+            </div>
+          ) : isMalus ? (
             <div className="mt-1 flex items-center justify-center px-1 text-[10px] font-mono border-t border-slate-800 pt-1">
               <span className="text-lime-400 font-black">
                 ⚠️ Malus x{effectiveMult.toFixed(2)} (-{Math.round((1 - effectiveMult) * 100)}%)
@@ -1042,7 +1053,7 @@ const TradingCard = ({
             </div>
           )}
 
-          {!minimal && dexIndex === null && (
+          {!minimal && dexIndex === null && machineMatchMult === null && (
             <div className="mt-1.5 flex items-center gap-1 px-1">
               <div className="flex-1 h-1.5 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
                 <div
@@ -1061,13 +1072,13 @@ const TradingCard = ({
           )}
         </div>
 
-        {count > 1 && dexIndex === null && (
+        {count > 1 && dexIndex === null && machineMatchMult === null && (
           <div className="absolute top-9 right-2 bg-slate-950/90 border border-white/30 text-white text-[10px] font-black px-2 py-0.5 rounded-full z-20 shadow-lg">
             x{count}
           </div>
         )}
 
-        {count >= 3 && onMerge && dexIndex === null && (
+        {count >= 3 && onMerge && dexIndex === null && machineMatchMult === null && (
           <button
             onClick={() => onMerge(employee)}
             className="absolute inset-x-2 bottom-2 bg-gradient-to-r from-emerald-400 to-green-500 hover:from-emerald-300 hover:to-green-400 text-slate-950 text-xs font-black py-2 rounded-xl shadow-[0_0_20px_#10b981] z-30 animate-bounce border-2 border-white flex items-center justify-center gap-1"
@@ -1097,7 +1108,7 @@ export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(() => !!localStorage.getItem('cnc_pseudo'));
   const [showAuthModal, setShowAuthModal] = useState(false);
 
-  // Progression principale (chargée uniquement depuis sauvegarde signée et vérifiée)
+  // Progression principale
   const [money, setMoney] = useState(() => initialSave.data?.money ?? 0);
   const [clickLevel, setClickLevel] = useState(() => initialSave.data?.clickLevel ?? 1);
   const [slots, setSlots] = useState(() => normalizeSlotsArray(initialSave.data?.slots));
@@ -1117,11 +1128,15 @@ export default function App() {
     Array.isArray(initialSave.data?.claimedChallenges) ? initialSave.data.claimedChallenges : []
   );
 
-  // États UI secondaires
+  // États UI secondaires & Tris de cartes
   const [leaderboard, setLeaderboard] = useState([]);
   const [isOpeningCrate, setIsOpeningCrate] = useState(false);
   const [crateDrops, setCrateDrops] = useState([]);
   const [gachaSubTab, setGachaSubTab] = useState('gallery'); // 'gallery' | 'gmpdex'
+  const [gallerySort, setGallerySort] = useState('best'); // 'best' | 'rarity' | 'stars' | 'count' | 'name'
+  const [galleryRarityFilter, setGalleryRarityFilter] = useState('ALL');
+  const [assignSort, setAssignSort] = useState('best_machine'); // 'best_machine' | 'base' | 'rarity' | 'stars'
+  const [assignSynergyOnly, setAssignSynergyOnly] = useState(false);
   const [floatingGains, setFloatingGains] = useState([]);
   const [spindleRpm, setSpindleRpm] = useState(0);
   const [assigningSlot, setAssigningSlot] = useState(null);
@@ -1213,7 +1228,7 @@ export default function App() {
     (atelier.cobots ? 0.45 : 0) +
     (atelier.twin_ai ? 0.65 : 0);
 
-  // Sauvegarde locale signée et protégée contre la falsification dans l'inspecteur
+  // Sauvegarde locale signée et protégée
   useEffect(() => {
     const safeMoney = Number.isFinite(money) && money >= 0 ? money : 0;
     const payload = {
@@ -1326,7 +1341,7 @@ export default function App() {
     return () => unsub();
   }, []);
 
-  // Calcul de la production ($/s) par machine et totale (inclut les cartes Malus)
+  // Calcul de la production ($/s) par machine et totale
   const prodStats = useMemo(() => {
     const breakdown = slots.map((slot, idx) => {
       if (idx >= currentSize.slots || !slot || !slot.machineId) return 0;
@@ -1365,7 +1380,7 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
-  // Référence d'état live pour sauvegarde fiable sans écrasement accidentel
+  // Référence d'état live pour sauvegarde fiable
   const latestStateRef = useRef({
     pseudo,
     password,
@@ -1668,7 +1683,7 @@ export default function App() {
     [claimedChallenges, challengeStats]
   );
 
-  // Réclamation de récompense d'un défi (cash ou pack de caisses gratuites)
+  // Réclamation de récompense d'un défi
   const handleClaimChallenge = (ch) => {
     if (claimedChallenges.includes(ch.id)) return;
     if (ch.getProgress(challengeStats) < ch.target) return;
@@ -1753,20 +1768,45 @@ export default function App() {
     }
   };
 
+  // Groupement et tri des cartes dans Ma Galerie (du meilleur au moins bon par défaut)
   const getGroupedInventory = () => {
     const groups = {};
     inventory.forEach((card) => {
       const emp = EMPLOYEES_CATALOG.find((e) => e.id === card.templateId);
       if (!emp) return;
+      if (galleryRarityFilter !== 'ALL' && emp.rarity !== galleryRarityFilter) return;
       const stars = card.stars || 1;
       const key = `${emp.id}_${stars}`;
       if (!groups[key]) {
-        groups[key] = { template: { ...emp, ...card, stars }, count: 0, items: [] };
+        groups[key] = {
+          template: { ...emp, ...card, stars },
+          count: 0,
+          items: [],
+          effectiveMult: getCardMachineMultiplier(emp, stars, null),
+          rarityRank: RARITY_STYLES[emp.rarity]?.rank ?? 0
+        };
       }
       groups[key].count++;
       groups[key].items.push(card);
     });
-    return Object.values(groups).sort((a, b) => b.template.baseMult - a.template.baseMult);
+
+    const list = Object.values(groups);
+    list.sort((a, b) => {
+      switch (gallerySort) {
+        case 'rarity':
+          return b.rarityRank - a.rarityRank || b.effectiveMult - a.effectiveMult;
+        case 'stars':
+          return (b.template.stars || 1) - (a.template.stars || 1) || b.effectiveMult - a.effectiveMult;
+        case 'count':
+          return b.count - a.count || b.effectiveMult - a.effectiveMult;
+        case 'name':
+          return a.template.name.localeCompare(b.template.name);
+        case 'best':
+        default:
+          return b.effectiveMult - a.effectiveMult || b.rarityRank - a.rarityRank;
+      }
+    });
+    return list;
   };
 
   // ==========================================
@@ -1776,7 +1816,7 @@ export default function App() {
     const nextClickValue = 1 * Math.pow(1.35, clickLevel);
     return (
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-5 items-center h-full">
-        {/* Centre en premier sur téléphone pour accès immédiat au pouce */}
+        {/* Centre en premier sur téléphone */}
         <div className="order-1 lg:order-2 lg:col-span-4 flex flex-col items-center justify-center py-2">
           <button
             type="button"
@@ -1973,7 +2013,6 @@ export default function App() {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-          {/* Grille 2D de l'atelier (scroll horizontal fluide sur mobile si 24 slots) */}
           <div className="lg:col-span-3 overflow-x-auto no-scrollbar rounded-2xl">
             <div
               className={`${
@@ -2182,7 +2221,7 @@ export default function App() {
 
     return (
       <div className="space-y-5">
-        {/* Bandeau Catalogue Permanent des Machines (défilable horizontalement sur mobile) */}
+        {/* Bandeau Catalogue Permanent des Machines */}
         <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-3.5 shadow-xl">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
             <div className="flex items-center gap-2">
@@ -2371,66 +2410,131 @@ export default function App() {
           })}
         </div>
 
-        {/* Modale de sélection de carte opérateur */}
+        {/* Modale de sélection de carte opérateur avec Trieur */}
         {assigningSlot !== null && (() => {
           const targetSlot = slots[assigningSlot];
           const targetMachine = targetSlot ? MACHINES_CATALOG.find((m) => m.id === targetSlot.machineId) : null;
+
+          const enrichedCards = availableCards
+            .map((card) => {
+              const emp = EMPLOYEES_CATALOG.find((e) => e.id === card.templateId);
+              if (!emp) return null;
+              const isMalus = emp.rarity === 'MALUS';
+              const isSynergy = !isMalus && targetMachine && (emp.specialty === targetMachine.id || emp.specialty === 'ALL');
+              const machineMult = getCardMachineMultiplier(emp, card.stars || 1, targetMachine?.id);
+              const baseMult = getCardMachineMultiplier(emp, card.stars || 1, null);
+              const rarityRank = RARITY_STYLES[emp.rarity]?.rank ?? 0;
+              return { card, emp, isMalus, isSynergy, machineMult, baseMult, rarityRank };
+            })
+            .filter(Boolean)
+            .filter((item) => (!assignSynergyOnly ? true : item.isSynergy))
+            .sort((a, b) => {
+              switch (assignSort) {
+                case 'base':
+                  return b.baseMult - a.baseMult || b.machineMult - a.machineMult;
+                case 'rarity':
+                  return b.rarityRank - a.rarityRank || b.machineMult - a.machineMult;
+                case 'stars':
+                  return (b.card.stars || 1) - (a.card.stars || 1) || b.machineMult - a.machineMult;
+                case 'best_machine':
+                default:
+                  return b.machineMult - a.machineMult || b.rarityRank - a.rarityRank;
+              }
+            });
+
           return (
             <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4">
-              <div className="bg-slate-900 border-2 border-slate-700 rounded-3xl p-4 sm:p-6 max-w-3xl w-full max-h-[85vh] flex flex-col shadow-2xl">
-                <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="bg-slate-900 border-2 border-slate-700 rounded-3xl p-4 sm:p-6 max-w-4xl w-full max-h-[88vh] flex flex-col shadow-2xl">
+                <div className="flex items-center justify-between pb-3 border-b border-slate-800 gap-2">
                   <div>
                     <h3 className="text-base sm:text-lg font-black text-white">
                       Opérateur — Îlot #{assigningSlot + 1} ({targetMachine?.name})
                     </h3>
                     <p className="text-xs text-slate-400">
-                      <span className="text-amber-400 font-bold">SYNERGIE x2</span> double le bonus sur cette machine !
+                      Trié par rendement réel sur cette machine (<span className="text-amber-400 font-bold">Synergie x2</span> incluse)
                     </p>
                   </div>
                   <button
                     onClick={() => setAssigningSlot(null)}
-                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold touch-manipulation"
+                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold touch-manipulation shrink-0"
                   >
                     Fermer ✕
                   </button>
                 </div>
 
-                {availableCards.length === 0 ? (
+                {/* Barre de tri & filtre dans la modale d'affectation */}
+                <div className="flex flex-wrap items-center justify-between gap-2 py-2.5 border-b border-slate-800/80">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[11px] font-bold text-slate-400 flex items-center gap-1">
+                      <ArrowDownWideNarrow className="w-3.5 h-3.5 text-cyan-400" /> Trier :
+                    </span>
+                    {[
+                      { id: 'best_machine', label: 'Meilleur sur cette CNC' },
+                      { id: 'base', label: 'Boost Base' },
+                      { id: 'rarity', label: 'Rareté' },
+                      { id: 'stars', label: 'Étoiles ★' }
+                    ].map((opt) => (
+                      <button
+                        key={opt.id}
+                        onClick={() => setAssignSort(opt.id)}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-black transition touch-manipulation ${
+                          assignSort === opt.id
+                            ? 'bg-cyan-500 text-slate-950'
+                            : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <button
+                    onClick={() => setAssignSynergyOnly((prev) => !prev)}
+                    className={`px-3 py-1 rounded-lg text-[11px] font-black border transition touch-manipulation flex items-center gap-1 ${
+                      assignSynergyOnly
+                        ? 'bg-amber-400 text-slate-950 border-amber-300'
+                        : 'bg-slate-950 text-amber-300 border-amber-500/30 hover:bg-slate-800'
+                    }`}
+                  >
+                    <Zap className="w-3 h-3" /> Synergies x2 uniquement
+                  </button>
+                </div>
+
+                {enrichedCards.length === 0 ? (
                   <div className="py-12 text-center text-slate-400 text-sm">
-                    Aucune carte disponible en réserve. Ouvrez un coffre dans l&apos;onglet <b>Coffres</b> !
+                    {availableCards.length === 0
+                      ? "Aucune carte disponible en réserve. Ouvrez un coffre dans l'onglet Coffres !"
+                      : 'Aucune carte disponible ne correspond à ce filtre.'}
                   </div>
                 ) : (
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 overflow-y-auto custom-scrollbar py-3 pr-1">
-                    {availableCards.map((card) => {
-                      const emp = EMPLOYEES_CATALOG.find((e) => e.id === card.templateId);
-                      if (!emp) return null;
-                      const isMalus = emp.rarity === 'MALUS';
-                      const isSynergy =
-                        !isMalus && targetMachine && (emp.specialty === targetMachine.id || emp.specialty === 'ALL');
-                      return (
-                        <div
-                          key={card.uid}
-                          onClick={() => {
-                            handleAssignEmployee(assigningSlot, card.uid);
-                            setAssigningSlot(null);
-                          }}
-                          className="cursor-pointer relative group touch-manipulation"
-                        >
-                          {isMalus ? (
-                            <div className="absolute -top-2 inset-x-3 z-30 bg-lime-700 text-white text-[9px] font-black uppercase text-center py-0.5 rounded-full shadow-lg">
-                              ⚠️ MALUS
+                    {enrichedCards.map(({ card, emp, isMalus, isSynergy, machineMult }) => (
+                      <div
+                        key={card.uid}
+                        onClick={() => {
+                          handleAssignEmployee(assigningSlot, card.uid);
+                          setAssigningSlot(null);
+                        }}
+                        className="cursor-pointer relative group touch-manipulation"
+                      >
+                        {isMalus ? (
+                          <div className="absolute -top-2 inset-x-3 z-30 bg-lime-700 text-white text-[9px] font-black uppercase text-center py-0.5 rounded-full shadow-lg">
+                            ⚠️ MALUS
+                          </div>
+                        ) : (
+                          isSynergy && (
+                            <div className="absolute -top-2 inset-x-3 z-30 bg-gradient-to-r from-amber-400 to-rose-500 text-slate-950 text-[9px] font-black uppercase text-center py-0.5 rounded-full shadow-lg">
+                              ⚡ SYNERGIE x2
                             </div>
-                          ) : (
-                            isSynergy && (
-                              <div className="absolute -top-2 inset-x-3 z-30 bg-gradient-to-r from-amber-400 to-rose-500 text-slate-950 text-[9px] font-black uppercase text-center py-0.5 rounded-full shadow-lg">
-                                ⚡ SYNERGIE x2
-                              </div>
-                            )
-                          )}
-                          <TradingCard employee={{ ...emp, ...card }} spriteSheetUrl={spriteSheetUrl} />
-                        </div>
-                      );
-                    })}
+                          )
+                        )}
+                        <TradingCard
+                          employee={{ ...emp, ...card }}
+                          machineMatchMult={machineMult}
+                          spriteSheetUrl={spriteSheetUrl}
+                        />
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
@@ -2498,23 +2602,25 @@ export default function App() {
                 <Sparkles className="w-4 h-4" /> Pack x10 Ouvert !
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-5 lg:grid-cols-2 gap-2 w-full max-h-[260px] overflow-y-auto custom-scrollbar p-1">
-                {crateDrops.map((drop) => {
-                  const st = RARITY_STYLES[drop.rarity] || RARITY_STYLES.COMMON;
-                  return (
-                    <div
-                      key={drop.uid}
-                      className={`p-1.5 rounded-xl bg-gradient-to-br ${st.gradient} border ${st.border} flex items-center gap-2 text-left`}
-                    >
-                      <div className="w-9 h-9 rounded-lg overflow-hidden bg-slate-950 shrink-0">
-                        <CharacterPortrait id={drop.id} spriteSheetUrl={spriteSheetUrl} />
+                {[...crateDrops]
+                  .sort((a, b) => (RARITY_STYLES[b.rarity]?.rank ?? 0) - (RARITY_STYLES[a.rarity]?.rank ?? 0))
+                  .map((drop) => {
+                    const st = RARITY_STYLES[drop.rarity] || RARITY_STYLES.COMMON;
+                    return (
+                      <div
+                        key={drop.uid}
+                        className={`p-1.5 rounded-xl bg-gradient-to-br ${st.gradient} border ${st.border} flex items-center gap-2 text-left`}
+                      >
+                        <div className="w-9 h-9 rounded-lg overflow-hidden bg-slate-950 shrink-0">
+                          <CharacterPortrait id={drop.id} spriteSheetUrl={spriteSheetUrl} />
+                        </div>
+                        <div className="min-w-0 flex-1 bg-slate-950/90 rounded-lg px-2 py-1">
+                          <div className="text-[10px] font-black text-white truncate">{drop.name}</div>
+                          <div className={`text-[8px] font-black uppercase ${st.text}`}>{st.label}</div>
+                        </div>
                       </div>
-                      <div className="min-w-0 flex-1 bg-slate-950/90 rounded-lg px-2 py-1">
-                        <div className="text-[10px] font-black text-white truncate">{drop.name}</div>
-                        <div className={`text-[8px] font-black uppercase ${st.text}`}>{st.label}</div>
-                      </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
               </div>
               <div className="flex gap-2 mt-3">
                 <button
@@ -2583,9 +2689,9 @@ export default function App() {
           )}
         </div>
 
-        {/* Colonne Droite : Bascule Galerie / GMP-Dex */}
+        {/* Colonne Droite : Bascule Galerie (avec Trieur) / GMP-Dex */}
         <div className="lg:w-2/3 bg-slate-900 border-2 border-slate-800 p-4 sm:p-5 rounded-3xl shadow-2xl flex flex-col">
-          <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
             <div className="flex items-center gap-2 bg-slate-950 p-1 rounded-2xl border border-slate-800">
               <button
                 onClick={() => setGachaSubTab('gallery')}
@@ -2658,25 +2764,81 @@ export default function App() {
                 })}
               </div>
             </>
-          ) : inventory.length === 0 ? (
-            <div className="text-center py-16 text-slate-500 border-2 border-dashed border-slate-800 rounded-2xl">
-              Aucune carte pour l&apos;instant. Ouvrez une Caisse dès 1 200 $ pour recruter votre premier talent !
-            </div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3.5">
-              {getGroupedInventory().map((group) => {
-                const freeCount = group.items.filter((item) => !slots.some((s) => s && s.employeeId === item.uid)).length;
-                return (
-                  <TradingCard
-                    key={`${group.template.id}_${group.template.stars}`}
-                    employee={group.template}
-                    count={group.count}
-                    onMerge={freeCount >= 3 ? () => handleMerge(group.template) : null}
-                    spriteSheetUrl={spriteSheetUrl}
-                  />
-                );
-              })}
-            </div>
+            <>
+              {/* Barre de Tri & Filtre de Ma Galerie */}
+              {inventory.length > 0 && (
+                <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-2.5 mb-3.5 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[11px] font-bold text-slate-400 flex items-center gap-1">
+                      <ArrowDownWideNarrow className="w-3.5 h-3.5 text-emerald-400" /> Trier :
+                    </span>
+                    {[
+                      { id: 'best', label: 'Meilleur Boost' },
+                      { id: 'rarity', label: 'Rareté' },
+                      { id: 'stars', label: 'Étoiles ★' },
+                      { id: 'count', label: 'Doublons' },
+                      { id: 'name', label: 'Nom' }
+                    ].map((opt) => (
+                      <button
+                        key={opt.id}
+                        onClick={() => setGallerySort(opt.id)}
+                        className={`px-2.5 py-1 rounded-lg text-[10px] sm:text-[11px] font-black transition touch-manipulation ${
+                          gallerySort === opt.id
+                            ? 'bg-emerald-400 text-slate-950'
+                            : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center gap-1 overflow-x-auto no-scrollbar max-w-full">
+                    {['ALL', 'SECRET', 'MYTHIC', 'LEGENDARY', 'EPIC', 'RARE', 'COMMON', 'MALUS'].map((rar) => (
+                      <button
+                        key={rar}
+                        onClick={() => setGalleryRarityFilter(rar)}
+                        className={`px-2 py-0.5 rounded-md text-[10px] font-black transition whitespace-nowrap touch-manipulation ${
+                          galleryRarityFilter === rar
+                            ? 'bg-cyan-500 text-slate-950'
+                            : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+                        }`}
+                      >
+                        {rar === 'ALL' ? 'Toutes' : RARITY_STYLES[rar].label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {inventory.length === 0 ? (
+                <div className="text-center py-16 text-slate-500 border-2 border-dashed border-slate-800 rounded-2xl">
+                  Aucune carte pour l&apos;instant. Ouvrez une Caisse dès 1 200 $ pour recruter votre premier talent !
+                </div>
+              ) : getGroupedInventory().length === 0 ? (
+                <div className="text-center py-12 text-slate-500 border-2 border-dashed border-slate-800 rounded-2xl text-xs">
+                  Aucune carte dans cette catégorie de rareté.
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3.5">
+                  {getGroupedInventory().map((group) => {
+                    const freeCount = group.items.filter(
+                      (item) => !slots.some((s) => s && s.employeeId === item.uid)
+                    ).length;
+                    return (
+                      <TradingCard
+                        key={`${group.template.id}_${group.template.stars}`}
+                        employee={group.template}
+                        count={group.count}
+                        onMerge={freeCount >= 3 ? () => handleMerge(group.template) : null}
+                        spriteSheetUrl={spriteSheetUrl}
+                      />
+                    );
+                  })}
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -3067,8 +3229,8 @@ export default function App() {
 
   return (
     <div className="min-h-screen lg:h-screen bg-slate-950 text-slate-100 font-sans flex items-center justify-center lg:p-3 overflow-x-hidden">
-      {/* Conteneur Overlay 16:9 sur PC */}
-      <div className="w-full min-h-screen lg:min-h-0 lg:w-auto lg:h-full lg:max-w-[1680px] lg:aspect-video bg-slate-950 lg:border-2 lg:border-slate-800 lg:rounded-3xl lg:shadow-[0_0_70px_rgba(0,0,0,0.85)] flex flex-col overflow-hidden relative">
+      {/* Conteneur Overlay verrouillé en 16:9 strict sur PC */}
+      <div className="cnc-pc-16-9 w-full min-h-screen lg:min-h-0 bg-slate-950 lg:border-2 lg:border-slate-800 lg:rounded-3xl lg:shadow-[0_0_70px_rgba(0,0,0,0.85)] flex flex-col overflow-hidden relative">
         {toast && (
           <div className="fixed top-16 lg:top-5 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-2xl bg-slate-900 border-2 border-cyan-400 text-white text-xs sm:text-sm font-bold shadow-2xl max-w-[92vw] text-center">
             {toast}
@@ -3209,7 +3371,7 @@ export default function App() {
           </div>
         </header>
 
-        {/* Contenu Principal (avec marge basse sur téléphone pour la barre fixe) */}
+        {/* Contenu Principal */}
         <main className="max-w-7xl mx-auto w-full p-3.5 sm:p-5 pb-24 lg:pb-5 flex-1 overflow-y-auto custom-scrollbar">
           {activeTab === 'production' && renderProduction()}
           {activeTab === 'plan' && renderPlan()}
@@ -3257,6 +3419,14 @@ export default function App() {
       <style
         dangerouslySetInnerHTML={{
           __html: `
+        @media (min-width: 1024px) {
+          .cnc-pc-16-9 {
+            width: min(96vw, calc((100vh - 24px) * 16 / 9));
+            height: min(calc(100vh - 24px), calc(96vw * 9 / 16));
+            aspect-ratio: 16 / 9;
+          }
+        }
+
         .custom-scrollbar::-webkit-scrollbar { width: 4px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
