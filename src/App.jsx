@@ -1,3020 +1,1904 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { initializeApp, getApps } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, getDoc, onSnapshot } from 'firebase/firestore';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
-  Settings, Cpu, Users, Package, Map, ArrowUpCircle, Zap, Trophy, Factory,
-  UserCheck, Lock, Check, LogIn, LogOut, RefreshCw, Sparkles, Image as ImageIcon,
-  AlertCircle, Cloud, RotateCcw, Play, Pause, Boxes, Microscope, GitBranch,
-  Briefcase, Award, TrendingUp, ShoppingCart, ShieldCheck, AlertTriangle,
-  Recycle, Wrench, CheckCircle2, Clock, Target, Sliders, Layers, FileCheck,
-  ChevronRight, Plus, Minus, BarChart3
+  Wrench, Cog, Package, Gauge, FileSpreadsheet, Cpu, Gift, Trophy,
+  Building2, HelpCircle, X, ShieldCheck, AlertTriangle, CheckCircle2,
+  Play, Pause, Trash2, Sparkles, Lock, Award, Lightbulb, Users,
+  TrendingUp, Layers, RefreshCw, LogOut, Sliders
 } from 'lucide-react';
+import { initializeApp, getApps } from 'firebase/app';
+import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import {
+  getFirestore, doc, getDoc, setDoc, collection, getDocs, query, limit
+} from 'firebase/firestore';
 
 // ============================================================================
-// MODULE 0 : CONFIGURATION FIREBASE & UTILITAIRES GLOBAUX
+// 1. CONFIGURATION FIREBASE & SÉCURITÉ ANTI-TRICHE
 // ============================================================================
-const YOUR_FIREBASE_CONFIG = {
-  apiKey: "AIzaSyCdGM5WTpuxrz7VNkRXqPPXz9LxDsPQia0",
+const firebaseConfig = {
+  apiKey: "AIzaSyDemoKeyReplaceWithYourOwn",
   authDomain: "cnc-tycoon-gmp.firebaseapp.com",
   projectId: "cnc-tycoon-gmp",
-  storageBucket: "cnc-tycoon-gmp.firebasestorage.app",
-  messagingSenderId: "907776837224",
-  appId: "1:907776837224:web:95ffba314b7a28ecc59ddd",
-  measurementId: "G-4NW1GH3ERT"
+  storageBucket: "cnc-tycoon-gmp.appspot.com",
+  messagingSenderId: "000000000000",
+  appId: "1:000000000000:web:000000000000"
 };
 
-let firebaseApp = null;
-let auth = null;
 let db = null;
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'cnc-empire-v1';
-
+let auth = null;
 try {
-  const activeConfig = (typeof __firebase_config !== 'undefined' && __firebase_config)
-    ? JSON.parse(__firebase_config)
-    : YOUR_FIREBASE_CONFIG;
-  firebaseApp = !getApps().length ? initializeApp(activeConfig) : getApps()[0];
-  auth = getAuth(firebaseApp);
-  db = getFirestore(firebaseApp);
+  const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+  auth = getAuth(app);
+  db = getFirestore(app);
 } catch (e) {
-  console.warn("Firebase initialisé en mode dégradé :", e);
+  console.warn("Mode hors-ligne local actif (Firebase non configuré).", e);
 }
 
-const SAVE_VERSION = 2;
-const MAX_OFFLINE_SECONDS = 7200; // Plafond hors-ligne configurable : 2 heures max
+const SEASON_APP_ID = 'cnc-empire-s2';
+const SAVE_STORAGE_KEY = 'cnc_gmp_save_s2_v1';
+const LEGACY_KEYS = ['cnc_save_v6', 'cnc_save_v2', 'cnc_money', 'cnc_slots', 'cnc_inventory', 'cnc_atelier'];
+const SECURITY_SALT = 'GMP_CNC_TYCOON_S2_9841_SEC';
 
-const clamp = (val, min, max) => Math.max(min, Math.min(max, val));
+function computeIntegrityHash(payloadStr) {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x1b873593;
+  const full = `${SECURITY_SALT}|${payloadStr}|${SECURITY_SALT}`;
+  for (let i = 0; i < full.length; i++) {
+    const ch = full.charCodeAt(i);
+    h1 ^= ch;
+    h1 = Math.imul(h1, 0x01000193);
+    h2 ^= ch + (i & 0xff);
+    h2 = Math.imul(h2, 0x85ebca6b);
+  }
+  return `${(h1 >>> 0).toString(16).padStart(8, '0')}${(h2 >>> 0).toString(16).padStart(8, '0')}`;
+}
 
-const formatMoney = (num) => {
-  if (num === undefined || num === null || isNaN(num)) return '0 €';
-  const sign = num < 0 ? '-' : '';
-  const abs = Math.abs(num);
-  if (abs < 10) return `${sign}${abs.toFixed(2)} €`;
-  if (abs < 1000) return `${sign}${Math.round(abs)} €`;
-  const suffixes = ['', 'k', 'M', 'Md', 'T'];
-  const tier = Math.floor(Math.log10(abs) / 3);
-  const idx = Math.min(tier, suffixes.length - 1);
-  const scale = Math.pow(10, idx * 3);
-  return `${sign}${(abs / scale).toFixed(2)} ${suffixes[idx]}€`;
-};
+function encodeSecureSave(dataObj) {
+  const json = JSON.stringify(dataObj);
+  const sig = computeIntegrityHash(json);
+  const b64 = btoa(unescape(encodeURIComponent(json)));
+  return `GMPSEC2.${sig}.${b64}`;
+}
 
-const formatWeight = (kg) => {
-  if (!kg || kg <= 0) return '0 g';
-  if (kg < 1) return `${Math.round(kg * 1000)} g`;
-  if (kg < 100) return `${kg.toFixed(2)} kg`;
-  return `${Math.round(kg)} kg`;
-};
-
-const formatDuration = (sec) => {
-  const s = Math.max(0, Math.ceil(sec));
-  const m = Math.floor(s / 60);
-  const rem = s % 60;
-  return m > 0 ? `${m}m ${rem.toString().padStart(2, '0')}s` : `${rem}s`;
-};
-
-const cleanKey = (str) => (str || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+function decodeSecureSave(raw) {
+  if (!raw || typeof raw !== 'string' || !raw.startsWith('GMPSEC2.')) return null;
+  const parts = raw.split('.');
+  if (parts.length !== 3) return null;
+  const [, sig, b64] = parts;
+  try {
+    const json = decodeURIComponent(escape(atob(b64)));
+    if (computeIntegrityHash(json) !== sig) {
+      console.warn('Signature de sauvegarde invalide détectée.');
+      return null;
+    }
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
 
 // ============================================================================
-// MODULE 1 : MATIÈRES PREMIÈRES (DONNÉES CENTRALISÉES)
+// 2. CATALOGUES INDUSTRIELS (MATÉRIAUX, PIÈCES, MACHINES, R&D, RH, LOCAUX)
 // ============================================================================
 const MATERIALS_CATALOG = [
-  {
-    id: 'alu',
-    name: 'Aluminium 6061',
-    short: 'Alu 6061',
-    pricePerKg: 6,
-    unit: 'kg',
-    color: '#38bdf8',
-    machinability: 4, // Bonus de facilité d'usinage sur la qualité
-    reqTech: null,
-    desc: 'Léger, facile à usiner. Idéal pour démarrer les séries.'
-  },
-  {
-    id: 'steel',
-    name: 'Acier C45',
-    short: 'Acier C45',
-    pricePerKg: 8,
-    unit: 'kg',
-    color: '#94a3b8',
-    machinability: 0,
-    reqTech: null,
-    desc: 'Acier mécanique polyvalent pour axes, brides et arbres.'
-  },
-  {
-    id: 'plastic',
-    name: 'Plastique POM / PEEK',
-    short: 'POM Tech',
-    pricePerKg: 15,
-    unit: 'kg',
-    color: '#a78bfa',
-    machinability: 6,
-    reqTech: 'mat_plastics',
-    desc: 'Polymère haute stabilité dimensionnelle, coupe rapide.'
-  },
-  {
-    id: 'inox',
-    name: 'Inox 316L',
-    short: 'Inox 316L',
-    pricePerKg: 24,
-    unit: 'kg',
-    color: '#2dd4bf',
-    machinability: -5,
-    reqTech: 'mat_inox',
-    desc: 'Résistant à la corrosion mais exigeant en arrosage et rigidité.'
-  },
-  {
-    id: 'copper',
-    name: 'Cuivre / Laiton C360',
-    short: 'Cuivre',
-    pricePerKg: 32,
-    unit: 'kg',
-    color: '#f59e0b',
-    machinability: 2,
-    reqTech: 'mat_copper',
-    desc: 'Composants électriques, thermiques et connectique de précision.'
-  },
-  {
-    id: 'titanium',
-    name: 'Titane Ti-6Al-4V',
-    short: 'Titane Aéro',
-    pricePerKg: 95,
-    unit: 'kg',
-    color: '#fb7185',
-    machinability: -10,
-    reqTech: 'mat_titanium',
-    desc: 'Alliage aéronautique à très forte valeur ajoutée, tolérances serrées.'
-  }
+  { id: 'alu_6061', name: 'Aluminium 6061', costPerKg: 6.5, density: 2.7, diff: 1.0, reqTech: 'mat_base', color: '#38bdf8' },
+  { id: 'steel_c45', name: 'Acier C45', costPerKg: 9.0, density: 7.85, diff: 1.15, reqTech: 'mat_base', color: '#94a3b8' },
+  { id: 'brass_cw614', name: 'Laiton CuZn39Pb3', costPerKg: 14.5, density: 8.4, diff: 1.05, reqTech: 'mat_inox', color: '#fbbf24' },
+  { id: 'inox_316l', name: 'Inox 316L', costPerKg: 21.0, density: 8.0, diff: 1.35, reqTech: 'mat_inox', color: '#cbd5e1' },
+  { id: 'peek_hp', name: 'Polymère PEEK', costPerKg: 34.0, density: 1.32, diff: 1.25, reqTech: 'mat_peek', color: '#d97706' },
+  { id: 'ti_6al4v', name: 'Titane TA6V', costPerKg: 68.0, density: 4.43, diff: 1.65, reqTech: 'mat_titanium', color: '#a78bfa' }
 ];
 
-// ============================================================================
-// MODULE 2 : CATALOGUE DES PIÈCES & GAMMES MULTI-OPÉRATIONS EXTENSIBLES
-// ============================================================================
 const PARTS_CATALOG = [
   {
-    id: 'spacer',
-    name: 'Entretoise Usinée',
-    category: 'Tournage / Débit',
-    materialId: 'alu',
-    materialKg: 0.15,
-    baseCycleTime: 6,
-    baseValue: 18,
-    difficulty: 1,
-    precisionReq: 45,
-    minQuality: 55,
-    compatibleMachines: ['drill_saw', 'lathe_conv', 'lathe_sub'],
+    id: 'spacer_alu',
+    name: 'Entretoise Cylindrique',
+    materialId: 'alu_6061',
+    kgPerPart: 0.25,
+    baseCycleSec: 4.5,
+    sellPrice: 7.5,
     reqTech: null,
-    routing: [{ step: 1, op: 'Débit & Perçage', machineTypes: ['drill_saw', 'lathe_conv', 'lathe_sub'], ratio: 1.0 }]
+    allowedMachines: ['drill_saw', 'manual_lathe', 'cnc_mill_3x', 'bi_spindle', 'cnc_5axis', 'edm_cell', 'slm_laser'],
+    desc: 'Pièce de base tournée et percée en série.'
   },
   {
-    id: 'shaft',
+    id: 'shaft_steel',
     name: 'Axe de Transmission',
-    category: 'Tournage',
-    materialId: 'steel',
-    materialKg: 0.35,
-    baseCycleTime: 10,
-    baseValue: 42,
-    difficulty: 2,
-    precisionReq: 58,
-    minQuality: 62,
-    compatibleMachines: ['lathe_conv', 'lathe_sub'],
+    materialId: 'steel_c45',
+    kgPerPart: 0.65,
+    baseCycleSec: 7.5,
+    sellPrice: 17.5,
     reqTech: null,
-    routing: [{ step: 1, op: 'Tournage cylindrique', machineTypes: ['lathe_conv', 'lathe_sub'], ratio: 1.0 }]
+    allowedMachines: ['manual_lathe', 'bi_spindle', 'cnc_5axis'],
+    desc: 'Arbre épaulé rectifié pour boîtes mécaniques.'
   },
   {
-    id: 'bracket',
-    name: 'Support Mécanique',
-    category: 'Fraisage',
-    materialId: 'alu',
-    materialKg: 0.40,
-    baseCycleTime: 11,
-    baseValue: 64,
-    difficulty: 2,
-    precisionReq: 62,
-    minQuality: 66,
-    compatibleMachines: ['drill_saw', 'mill_3axis', 'mill_5axis'],
-    reqTech: null,
-    routing: [{ step: 1, op: 'Fraisage & Perçage', machineTypes: ['drill_saw', 'mill_3axis', 'mill_5axis'], ratio: 1.0 }]
-  },
-  {
-    id: 'bushing',
-    name: 'Bague de Guidage',
-    category: 'Tournage Précis',
-    materialId: 'steel',
-    materialKg: 0.25,
-    baseCycleTime: 9,
-    baseValue: 76,
-    difficulty: 3,
-    precisionReq: 70,
-    minQuality: 72,
-    compatibleMachines: ['lathe_conv', 'lathe_sub'],
-    reqTech: 'prod_cnc',
-    routing: [{ step: 1, op: 'Alésage & Finition CN', machineTypes: ['lathe_conv', 'lathe_sub'], ratio: 1.0 }]
-  },
-  {
-    id: 'pulley',
-    name: 'Poulie Crantée',
-    category: 'Polymère Technique',
-    materialId: 'plastic',
-    materialKg: 0.22,
-    baseCycleTime: 9,
-    baseValue: 95,
-    difficulty: 3,
-    precisionReq: 68,
-    minQuality: 70,
-    compatibleMachines: ['mill_3axis', 'lathe_sub', 'mill_5axis'],
-    reqTech: 'mat_plastics',
-    routing: [{ step: 1, op: 'Taillage CNC', machineTypes: ['mill_3axis', 'lathe_sub', 'mill_5axis'], ratio: 1.0 }]
-  },
-  {
-    id: 'flange',
-    name: 'Bride Hydraulique',
-    category: 'Usinage Combiné',
-    materialId: 'steel',
-    materialKg: 0.60,
-    baseCycleTime: 14,
-    baseValue: 135,
-    difficulty: 4,
-    precisionReq: 74,
-    minQuality: 75,
-    compatibleMachines: ['mill_3axis', 'lathe_sub', 'mill_5axis'],
-    reqTech: 'prod_3axis',
-    routing: [{ step: 1, op: 'Fraisage CN 3 Axes', machineTypes: ['mill_3axis', 'lathe_sub', 'mill_5axis'], ratio: 1.0 }]
-  },
-  {
-    id: 'gear',
-    name: 'Engrenage Inox',
-    category: 'Mécanique de Précision',
-    materialId: 'inox',
-    materialKg: 0.50,
-    baseCycleTime: 17,
-    baseValue: 265,
-    difficulty: 5,
-    precisionReq: 80,
-    minQuality: 80,
-    compatibleMachines: ['mill_3axis', 'mill_5axis', 'edm_wire'],
+    id: 'bushing_brass',
+    name: 'Bague de Guidage Laiton',
+    materialId: 'brass_cw614',
+    kgPerPart: 0.35,
+    baseCycleSec: 6.5,
+    sellPrice: 24.0,
     reqTech: 'mat_inox',
-    routing: [{ step: 1, op: 'Taillage Haute Précision', machineTypes: ['mill_3axis', 'mill_5axis', 'edm_wire'], ratio: 1.0 }]
+    allowedMachines: ['manual_lathe', 'bi_spindle', 'cnc_5axis'],
+    desc: 'Palier antifriction haute précision.'
   },
   {
-    id: 'connector',
-    name: 'Collecteur Thermique',
-    category: 'Haute Conductivité',
-    materialId: 'copper',
-    materialKg: 0.35,
-    baseCycleTime: 15,
-    baseValue: 340,
-    difficulty: 5,
-    precisionReq: 84,
-    minQuality: 82,
-    compatibleMachines: ['lathe_sub', 'mill_5axis', 'edm_wire'],
-    reqTech: 'mat_copper',
-    routing: [{ step: 1, op: 'Découpe Fil / Micro-usinage', machineTypes: ['lathe_sub', 'mill_5axis', 'edm_wire'], ratio: 1.0 }]
+    id: 'bracket_cnc',
+    name: 'Support Fraisé 3 Axes',
+    materialId: 'inox_316l',
+    kgPerPart: 0.85,
+    baseCycleSec: 11.0,
+    sellPrice: 44.0,
+    reqTech: 'prod_cnc3',
+    allowedMachines: ['cnc_mill_3x', 'cnc_5axis', 'edm_cell'],
+    desc: 'Équerre structurelle en Inox 316L.'
   },
   {
-    id: 'housing',
-    name: 'Carter de Réducteur',
-    category: 'Usinage 5 Axes',
-    materialId: 'inox',
-    materialKg: 0.90,
-    baseCycleTime: 22,
-    baseValue: 590,
-    difficulty: 6,
-    precisionReq: 86,
-    minQuality: 85,
-    compatibleMachines: ['mill_5axis', 'aero_cell'],
+    id: 'insulator_peek',
+    name: 'Isolateur PEEK Haute Temp.',
+    materialId: 'peek_hp',
+    kgPerPart: 0.20,
+    baseCycleSec: 9.5,
+    sellPrice: 58.0,
+    reqTech: 'mat_peek',
+    allowedMachines: ['cnc_mill_3x', 'bi_spindle', 'cnc_5axis', 'edm_cell'],
+    desc: 'Composant diélectrique pour environnement sévère.'
+  },
+  {
+    id: 'gear_helical',
+    name: 'Engrenage Hélicoïdal UGV',
+    materialId: 'steel_c45',
+    kgPerPart: 1.15,
+    baseCycleSec: 15.0,
+    sellPrice: 96.0,
     reqTech: 'prod_5axis',
-    routing: [{ step: 1, op: 'Fraisage 5 Axes Continu', machineTypes: ['mill_5axis', 'aero_cell'], ratio: 1.0 }]
+    allowedMachines: ['cnc_5axis', 'edm_cell', 'slm_laser'],
+    desc: 'Pignon taillé 5 axes à denture hélicoïdale.'
   },
   {
-    id: 'aero_strut',
-    name: 'Support Structurel Aéro',
-    category: 'Aéronautique',
-    materialId: 'titanium',
-    materialKg: 0.75,
-    baseCycleTime: 26,
-    baseValue: 1850,
-    difficulty: 7,
-    precisionReq: 91,
-    minQuality: 89,
-    compatibleMachines: ['mill_5axis', 'edm_wire', 'aero_cell'],
+    id: 'housing_ti',
+    name: 'Carter Aéronautique TA6V',
+    materialId: 'ti_6al4v',
+    kgPerPart: 1.45,
+    baseCycleSec: 21.0,
+    sellPrice: 175.0,
     reqTech: 'mat_titanium',
-    routing: [{ step: 1, op: 'UGV Titane 5 Axes', machineTypes: ['mill_5axis', 'edm_wire', 'aero_cell'], ratio: 1.0 }]
+    allowedMachines: ['cnc_5axis', 'edm_cell', 'slm_laser'],
+    desc: 'Carcasse monobloc allégée en Titane aéronautique.'
   },
   {
-    id: 'turbine_blade',
-    name: 'Aube de Turbine HP',
-    category: 'Spatial / Turbine',
-    materialId: 'titanium',
-    materialKg: 0.65,
-    baseCycleTime: 30,
-    baseValue: 3400,
-    difficulty: 8,
-    precisionReq: 95,
-    minQuality: 92,
-    compatibleMachines: ['aero_cell'],
-    reqTech: 'auto_cells',
-    routing: [{ step: 1, op: 'Cellule Robotisée UGV', machineTypes: ['aero_cell'], ratio: 1.0 }]
+    id: 'nozzle_slm',
+    name: 'Tuyère Spatielle Inconel/Ti',
+    materialId: 'ti_6al4v',
+    kgPerPart: 1.80,
+    baseCycleSec: 26.0,
+    sellPrice: 285.0,
+    reqTech: 'prod_slm',
+    allowedMachines: ['slm_laser'],
+    desc: 'Chambre à canaux régénératifs imprimée par fusion laser.'
   }
 ];
 
-// ============================================================================
-// MODULE 3 : MACHINES DE PRODUCTION, MÉTROLOGIE & SUPPORT
-// ============================================================================
 const MACHINES_CATALOG = [
   {
     id: 'drill_saw',
-    name: 'Scie & Perceuse Industrielle',
-    category: 'Débit & Perçage',
-    techLevel: 1,
-    baseCost: 250,
-    cycleMultiplier: 1.0,
-    qtyPerCycle: 2,
-    baseQuality: 65,
-    basePrecision: 56,
-    opCostPerCycle: 1,
-    compatibleMaterials: ['alu', 'steel', 'plastic'],
+    name: 'Perceuse à Colonne & Scie',
+    category: 'Conventionnel',
+    baseCost: 90,
+    costMult: 1.34,
+    speedMult: 1.0,
+    batchSize: 1,
+    baseQuality: 74,
+    basePrecision: 72,
     reqTech: null,
-    color: '#475569',
-    pros: 'Très rapide en débit x2, coût quasi nul',
-    cons: 'Précision limitée aux pièces simples'
+    defaultPart: 'spacer_alu',
+    desc: 'Poste d’ébauche robuste pour entretoises simples.'
   },
   {
-    id: 'lathe_conv',
+    id: 'manual_lathe',
     name: 'Tour Conventionnel',
-    category: 'Tournage Manuel',
-    techLevel: 1,
-    baseCost: 850,
-    cycleMultiplier: 1.0,
-    qtyPerCycle: 1,
-    baseQuality: 73,
-    basePrecision: 68,
-    opCostPerCycle: 2,
-    compatibleMaterials: ['alu', 'steel', 'plastic', 'copper'],
-    reqTech: null,
-    color: '#047857',
-    pros: 'Polyvalent en tournage, bonne finition de base',
-    cons: '1 pièce par cycle'
-  },
-  {
-    id: 'mill_3axis',
-    name: 'Centre d\'Usinage 3 Axes',
-    category: 'Fraisage CNC',
-    techLevel: 2,
-    baseCost: 3800,
-    cycleMultiplier: 0.90,
-    qtyPerCycle: 2,
+    category: 'Tournage',
+    baseCost: 340,
+    costMult: 1.34,
+    speedMult: 1.25,
+    batchSize: 1,
     baseQuality: 80,
-    basePrecision: 77,
-    opCostPerCycle: 6,
-    compatibleMaterials: ['alu', 'steel', 'plastic', 'inox', 'copper'],
-    reqTech: 'prod_3axis',
-    color: '#2563eb',
-    pros: 'Pilier polyvalent du fraisage CNC (x2/cycle)',
-    cons: 'Ne réalise pas les pièces 5 axes complexes'
+    basePrecision: 79,
+    reqTech: null,
+    defaultPart: 'shaft_steel',
+    desc: 'Tournage parallèle de précision pour axes et bagues.'
   },
   {
-    id: 'lathe_sub',
+    id: 'cnc_mill_3x',
+    name: 'Fraiseuse CNC 3 Axes',
+    category: 'Fraisage CN',
+    baseCost: 1450,
+    costMult: 1.34,
+    speedMult: 1.55,
+    batchSize: 1,
+    baseQuality: 86,
+    basePrecision: 85,
+    reqTech: 'prod_cnc3',
+    defaultPart: 'bracket_cnc',
+    desc: 'Centre vertical programmable pour pièces prismatiques.'
+  },
+  {
+    id: 'bi_spindle',
     name: 'Tour CNC Bi-Broche',
-    category: 'Tournage CNC',
-    techLevel: 3,
-    baseCost: 12500,
-    cycleMultiplier: 0.72,
-    qtyPerCycle: 3,
-    baseQuality: 85,
-    basePrecision: 84,
-    opCostPerCycle: 14,
-    compatibleMaterials: ['alu', 'steel', 'plastic', 'inox', 'copper'],
-    reqTech: 'prod_cnc',
-    color: '#4f46e5',
-    pros: 'Cadence très élevée (3 pièces/cycle) & haute précision',
-    cons: 'Spécialisé pièces de révolution'
+    category: 'Tournage UGV',
+    baseCost: 6800,
+    costMult: 1.34,
+    speedMult: 2.15,
+    batchSize: 2,
+    baseQuality: 90,
+    basePrecision: 89,
+    reqTech: 'prod_bi',
+    defaultPart: 'bushing_brass',
+    desc: 'Double broche synchronisée produisant 2 pièces par cycle.'
   },
   {
-    id: 'mill_5axis',
+    id: 'cnc_5axis',
     name: 'Centre 5 Axes UGV',
-    category: 'Usinage Complexe',
-    techLevel: 4,
-    baseCost: 52000,
-    cycleMultiplier: 0.85,
-    qtyPerCycle: 2,
-    baseQuality: 91,
-    basePrecision: 92,
-    opCostPerCycle: 38,
-    compatibleMaterials: ['alu', 'steel', 'plastic', 'inox', 'copper', 'titanium'],
+    category: 'Haute Précision',
+    baseCost: 29000,
+    costMult: 1.34,
+    speedMult: 2.65,
+    batchSize: 2,
+    baseQuality: 94,
+    basePrecision: 94,
     reqTech: 'prod_5axis',
-    color: '#9333ea',
-    pros: 'Compatible Titane & pièces complexes aéronautiques',
-    cons: 'Coût d\'acquisition et d\'exploitation élevé'
+    defaultPart: 'gear_helical',
+    desc: 'Usinage continu 5 axes pour géométries complexes.'
   },
   {
-    id: 'edm_wire',
-    name: 'Électroérosion à Fil (EDM)',
-    category: 'Procédé Spécial',
-    techLevel: 5,
-    baseCost: 135000,
-    cycleMultiplier: 0.95,
-    qtyPerCycle: 2,
-    baseQuality: 95,
-    basePrecision: 97,
-    opCostPerCycle: 65,
-    compatibleMaterials: ['steel', 'inox', 'copper', 'titanium'],
-    reqTech: 'prod_complex',
-    color: '#d97706',
-    pros: 'Précision micrométrique inégalée sur métaux durs',
-    cons: 'Cycle plus lent, réservé aux matériaux conducteurs'
-  },
-  {
-    id: 'aero_cell',
-    name: 'Cellule Robotisée Titane',
-    category: 'Automatisation Ultime',
-    techLevel: 6,
-    baseCost: 390000,
-    cycleMultiplier: 0.65,
-    qtyPerCycle: 4,
-    baseQuality: 96,
+    id: 'edm_cell',
+    name: 'Cellule Électroérosion EDM',
+    category: 'Micro-Usinage',
+    baseCost: 125000,
+    costMult: 1.34,
+    speedMult: 3.10,
+    batchSize: 3,
+    baseQuality: 97,
     basePrecision: 98,
-    opCostPerCycle: 145,
-    compatibleMaterials: ['alu', 'steel', 'plastic', 'inox', 'copper', 'titanium'],
-    reqTech: 'auto_cells',
-    color: '#e11d48',
-    pros: 'Production en série x4 en qualité Aéronautique / Spatial',
-    cons: 'Investissement lourd et consommation matière massive'
+    reqTech: 'prod_edm',
+    defaultPart: 'housing_ti',
+    desc: 'Découpe par étincelage au micron sans effort de coupe.'
+  },
+  {
+    id: 'slm_laser',
+    name: 'Fonderie Laser Titane SLM-900',
+    category: 'Fabrication Additive',
+    baseCost: 1250000,
+    costMult: 1.34,
+    speedMult: 3.75,
+    batchSize: 4,
+    baseQuality: 99,
+    basePrecision: 99,
+    reqTech: 'prod_slm',
+    defaultPart: 'nozzle_slm',
+    desc: 'Fusion laser sélective sur lit de poudre métallique (4 pièces/cycle).'
   }
 ];
 
 const METROLOGY_CATALOG = [
-  {
-    id: 'caliper_dig',
-    name: 'Pied à Coulisse Numérique',
-    cost: 450,
-    detectionRate: 0.65,
-    maxMeasurablePrecision: 70,
-    processFeedbackBonus: 0,
-    autoInspect: false,
-    reqTech: null,
-    desc: 'Permet le contrôle dimensionnel manuel des premiers lots (détection 65%).'
-  },
-  {
-    id: 'micrometer',
-    name: 'Micromètre & Tampons',
-    cost: 2200,
-    detectionRate: 0.78,
-    maxMeasurablePrecision: 80,
-    processFeedbackBonus: 2,
-    autoInspect: false,
-    reqTech: 'metro_manual',
-    desc: 'Contrôle précis au centième. Améliore les réglages suivants (+2 Qualité/Précision).'
-  },
-  {
-    id: 'height_gauge',
-    name: 'Colonne de Mesure Numérique',
-    cost: 9500,
-    detectionRate: 0.88,
-    maxMeasurablePrecision: 88,
-    processFeedbackBonus: 4,
-    autoInspect: false,
-    reqTech: 'metro_column',
-    desc: 'Mesure rapide sur marbre granit. Correction SPC (+4 Qualité/Précision).'
-  },
-  {
-    id: 'profile_proj',
-    name: 'Projecteur de Profil Optique',
-    cost: 34000,
-    detectionRate: 0.94,
-    maxMeasurablePrecision: 93,
-    processFeedbackBonus: 6,
-    autoInspect: false,
-    reqTech: 'metro_advanced',
-    desc: 'Requis pour la certification ISO 9001. Détection 94% (+6 stabilité procédé).'
-  },
-  {
-    id: 'cmm_3d',
-    name: 'Machine Tridimensionnelle (MMT)',
-    cost: 115000,
-    detectionRate: 0.985,
-    maxMeasurablePrecision: 98,
-    processFeedbackBonus: 8,
-    autoInspect: false,
-    reqTech: 'metro_cmm',
-    desc: 'Requis pour la certification EN 9100 Aéronautique. Palpage 3D au micron.'
-  },
-  {
-    id: 'opt_scanner',
-    name: 'Scanner Optique Automatisé',
-    cost: 290000,
-    detectionRate: 0.998,
-    maxMeasurablePrecision: 100,
-    processFeedbackBonus: 10,
-    autoInspect: true,
-    reqTech: 'metro_auto',
-    desc: 'Contrôle 100% automatisé à la sortie de chaque cycle CNC (+10 procédé).'
-  }
+  { id: 'caliper', name: 'Pied à Coulisse & Micromètre', cost: 0, speed: 1.0, detectRate: 0.72, reqTech: 'met_manual', desc: 'Contrôle manuel poste par poste.' },
+  { id: 'col2d', name: 'Colonne de Mesure 2D', cost: 1600, speed: 1.8, detectRate: 0.86, reqTech: 'met_col2d', desc: 'Relevés numériques de hauteurs et alésages.' },
+  { id: 'cmm3d', name: 'Machine Tridimensionnelle MMT', cost: 14500, speed: 3.0, detectRate: 0.95, reqTech: 'met_cmm', desc: 'Palpage 3D haute précision (requis pour EN 9100).' },
+  { id: 'scanner3d', name: 'Scanner Optique 3D Laser', cost: 62000, speed: 5.5, detectRate: 0.995, reqTech: 'met_scanner', desc: 'Numérisation complète et inspection automatique.' }
 ];
 
-const SUPPORT_CATALOG = [
-  {
-    id: 'coolant_sys',
-    name: 'Centrale Lubrification & Filtration',
-    cost: 2400,
-    cycleBonus: 0.05,
-    qualityBonus: 4,
-    precisionBonus: 2,
-    opCostReduction: 0.15,
-    reqTech: null,
-    desc: '+4 Qualité, +2 Précision, -15% coût d\'exploitation sur tout le parc.'
-  },
-  {
-    id: 'tool_presetter',
-    name: 'Banc de Préréglage & Magasin Outils',
-    cost: 14000,
-    cycleBonus: 0.12,
-    qualityBonus: 3,
-    precisionBonus: 4,
-    opCostReduction: 0.10,
-    reqTech: 'meth_tools',
-    desc: 'Réduit les temps de changement d\'outil (-12% cycle) et +4 Précision.'
-  },
-  {
-    id: 'crane',
-    name: 'Pont Roulant 10T',
-    cost: 38000,
-    cycleBonus: 0.15,
-    qualityBonus: 1,
-    precisionBonus: 0,
-    opCostReduction: 0,
-    reqTech: 'meth_flow',
-    desc: 'Manutention rapide des bruts lourds (-15% cycle). Visible animé sur le Plan 2D.'
-  },
-  {
-    id: 'conveyor',
-    name: 'Convoyeur & Évacuateur Automatique',
-    cost: 85000,
-    cycleBonus: 0.15,
-    qualityBonus: 2,
-    precisionBonus: 1,
-    opCostReduction: 0.10,
-    reqTech: 'auto_conveyor',
-    desc: 'Fluidifie les flux atelier (-15% temps de cycle, +2 Qualité).'
-  },
-  {
-    id: 'agv',
-    name: 'Flotte Robots AGV Logistique',
-    cost: 210000,
-    cycleBonus: 0.22,
-    qualityBonus: 2,
-    precisionBonus: 2,
-    opCostReduction: 0.12,
-    reqTech: 'auto_robots',
-    desc: 'Logistique autonome entre magasin et îlots (-22% cycle). Visible sur le Plan 2D.'
-  }
+const CERTIFICATIONS_CATALOG = [
+  { id: 'iso9001', name: 'ISO 9001', reqRep: 20, reqMetro: 'col2d', bonus: 0.08, desc: '+8% valeur de vente & accès aux contrats Palier 2.' },
+  { id: 'en9100', name: 'EN 9100 Aéro', reqRep: 50, reqMetro: 'cmm3d', bonus: 0.14, desc: '+14% valeur de vente & contrats aéronautiques.' },
+  { id: 'nadcap', name: 'NADCAP Spatial', reqRep: 80, reqMetro: 'scanner3d', bonus: 0.22, desc: '+22% valeur de vente & appels d’offres spatiaux.' }
 ];
 
 const ATELIER_UPGRADES = {
   sizes: [
-    { level: 1, name: 'Garage d\'Usinage', slots: 4, cost: 0 },
-    { level: 2, name: 'Atelier PME', slots: 8, cost: 18000 },
-    { level: 3, name: 'Usine Aéronautique', slots: 12, cost: 120000 },
-    { level: 4, name: 'Gigafactory 4.0', slots: 16, cost: 650000 }
+    { id: 'garage', name: 'Atelier Étudiant GMP', slots: 4, cost: 0, cols: 2 },
+    { id: 'hall_small', name: 'Hall Mécanique (8 îlots)', slots: 8, cost: 1800, cols: 4 },
+    { id: 'hall_med', name: 'Usine de Précision (12 îlots)', slots: 12, cost: 12500, cols: 4 },
+    { id: 'hall_large', name: 'Pôle Aéronautique (16 îlots)', slots: 16, cost: 68000, cols: 4 },
+    { id: 'complex_20', name: 'Complexe Industriel 4.0 (20 îlots)', slots: 20, cost: 290000, cols: 5 },
+    { id: 'gigafactory_24', name: 'Campus Aérospatial (24 îlots)', slots: 24, cost: 1150000, cols: 6 }
   ],
   floors: [
-    { id: 'beton', name: 'Dalle Béton Brut', cost: 0, qualBonus: 0, precBonus: 0, color: '#1e293b' },
-    { id: 'resine', name: 'Résine Époxy Antistatique (+2 Qual/Préc)', cost: 24000, qualBonus: 2, precBonus: 2, color: '#0c4a6e' },
-    { id: 'carbone', name: 'Dalle Stabilisée ISO (+5 Qual/Préc)', cost: 180000, qualBonus: 5, precBonus: 5, color: '#090d16' }
+    { id: 'concrete', name: 'Dalle Béton Brut', cost: 0, speedBonus: 0, qualBonus: 0, bg: '#0f172a' },
+    { id: 'epoxy', name: 'Résine Époxy Antistatique', cost: 3200, speedBonus: 0.08, qualBonus: 3, bg: '#0c192c' },
+    { id: 'cleanroom', name: 'Sol Technique Salle Blanche', cost: 28000, speedBonus: 0.16, qualBonus: 7, bg: '#091e26' }
+  ],
+  extras: [
+    { id: 'crane', name: 'Pont Roulant 5 Tonnes', cost: 4800, effect: '+12% cadence globale', desc: 'Manutention rapide des bruts lourds.' },
+    { id: 'agv', name: 'Flotte de Robots AGV', cost: 38000, effect: '+22% cadence globale', desc: 'Approvisionnement autonome des îlots CNC.' }
   ]
 };
 
-// ============================================================================
-// MODULE 4 : ARBRE TECHNOLOGIQUE INDUSTRIEL (6 BRANCHES, 24 TECHNOLOGIES)
-// ============================================================================
-const TECH_BRANCHES = [
-  { id: 'production', name: 'Production', color: 'text-blue-400', border: 'border-blue-500/40', bg: 'bg-blue-500/10' },
-  { id: 'metrology', name: 'Métrologie', color: 'text-cyan-400', border: 'border-cyan-500/40', bg: 'bg-cyan-500/10' },
-  { id: 'quality', name: 'Qualité & Normes', color: 'text-emerald-400', border: 'border-emerald-500/40', bg: 'bg-emerald-500/10' },
-  { id: 'methods', name: 'Méthodes', color: 'text-amber-400', border: 'border-amber-500/40', bg: 'bg-amber-500/10' },
-  { id: 'automation', name: 'Automatisation', color: 'text-purple-400', border: 'border-purple-500/40', bg: 'bg-purple-500/10' },
-  { id: 'materials', name: 'Matériaux', color: 'text-rose-400', border: 'border-rose-500/40', bg: 'bg-rose-500/10' }
-];
-
-const TECH_TREE = [
+const TECH_TREE_CATALOG = [
   // Branche 1 : Production
-  { id: 'prod_3axis', branch: 'production', name: 'Fraisage CNC 3 Axes', costMoney: 1500, costRP: 10, prereqs: [], unlocks: 'Centre 3 Axes, Bride Hydraulique', effects: { cycleSpeed: 0.05 }, desc: 'Débloque les centres d\'usinage 3 axes et le fraisage de série.' },
-  { id: 'prod_cnc', branch: 'production', name: 'Tournage CN Bi-Broche', costMoney: 5500, costRP: 35, prereqs: ['prod_3axis'], unlocks: 'Tour CNC Bi-Broche, Bague de Guidage', effects: { cycleSpeed: 0.06 }, desc: 'Passe au tournage numérique multi-pièces haute cadence.' },
-  { id: 'prod_5axis', branch: 'production', name: 'Usinage 5 Axes UGV', costMoney: 26000, costRP: 95, prereqs: ['prod_cnc'], unlocks: 'Centre 5 Axes UGV, Carter Réducteur', effects: { precision: 3 }, desc: 'Usinage continu sur 5 axes simultanés pour géométries complexes.' },
-  { id: 'prod_complex', branch: 'production', name: 'Électroérosion & Procédés', costMoney: 75000, costRP: 210, prereqs: ['prod_5axis'], unlocks: 'Électroérosion à Fil (EDM)', effects: { quality: 3, precision: 4 }, desc: 'Maîtrise de la découpe par étincelage haute précision.' },
+  { id: 'prod_conv', branch: 'Production', name: 'Usinage Conventionnel', moneyCost: 0, rpCost: 0, req: null, x: 455, y: 230, effect: 'Débloque Perceuse & Tour Conventionnel', unlocks: 'Départ' },
+  { id: 'prod_cnc3', branch: 'Production', name: 'Commande Numérique 3 Axes', moneyCost: 900, rpCost: 14, req: 'prod_conv', x: 380, y: 175, effect: 'Débloque Fraiseuse 3 Axes & Support mécanique', unlocks: 'Fraiseuse 3 Axes' },
+  { id: 'prod_bi', branch: 'Production', name: 'Tournage Bi-Broche', moneyCost: 5200, rpCost: 38, req: 'prod_cnc3', x: 295, y: 120, effect: 'Débloque Tour Bi-Broche (cadence x2)', unlocks: 'Tour Bi-Broche' },
+  { id: 'prod_5axis', branch: 'Production', name: 'Usinage 5 Axes UGV', moneyCost: 22000, rpCost: 90, req: 'prod_bi', crossReq: 'met_cmm', x: 205, y: 78, effect: 'Débloque Centre 5 Axes & Engrenage hélicoïdal', unlocks: 'Centre 5 Axes' },
+  { id: 'prod_edm', branch: 'Production', name: 'Électroérosion & Cellules 4.0', moneyCost: 95000, rpCost: 210, req: 'prod_5axis', x: 112, y: 45, effect: 'Débloque Cellule EDM & +20% Précision', unlocks: 'Cellule EDM' },
+  { id: 'prod_slm', branch: 'Production', name: 'Fonderie Laser Métal SLM', moneyCost: 680000, rpCost: 650, req: 'prod_edm', crossReq: 'mat_titanium', x: 42, y: 95, effect: 'Débloque Fonderie Laser Titane SLM-900 & Tuyère Spatielle', unlocks: 'Fonderie SLM-900' },
 
   // Branche 2 : Métrologie
-  { id: 'metro_manual', branch: 'metrology', name: 'Contrôle Dimensionnel Fin', costMoney: 900, costRP: 8, prereqs: [], unlocks: 'Micromètre & Tampons', effects: { precision: 2 }, desc: 'Débloque le micromètre et les mesures au centième.' },
-  { id: 'metro_column', branch: 'metrology', name: 'Métrologie sur Marbre', costMoney: 4200, costRP: 30, prereqs: ['metro_manual'], unlocks: 'Colonne de Mesure Numérique', effects: { precision: 3 }, desc: 'Contrôle de hauteur et perpendicularité sur marbre granit.' },
-  { id: 'metro_advanced', branch: 'metrology', name: 'Métrologie Optique', costMoney: 18000, costRP: 80, prereqs: ['metro_column'], unlocks: 'Projecteur de Profil Optique', effects: { quality: 2, precision: 3 }, desc: 'Analyse optique sans contact des profils critiques.' },
-  { id: 'metro_cmm', branch: 'metrology', name: 'Contrôle Tridimensionnel', costMoney: 62000, costRP: 180, prereqs: ['metro_advanced'], unlocks: 'Machine Tridimensionnelle (MMT)', effects: { precision: 5 }, desc: 'Indispensable pour certifier les lots Aéronautiques EN 9100.' },
-  { id: 'metro_auto', branch: 'metrology', name: 'Inspection Automatisée 3D', costMoney: 160000, costRP: 380, prereqs: ['metro_cmm'], unlocks: 'Scanner Optique Automatisé', effects: { autoInspectUnlock: true, quality: 3 }, desc: 'Contrôle automatique de chaque lot dès la sortie de machine.' },
+  { id: 'met_manual', branch: 'Métrologie', name: 'Instruments Manuels', moneyCost: 0, rpCost: 0, req: null, x: 500, y: 205, effect: 'Débloque Pied à Coulisse & Micromètre', unlocks: 'Départ' },
+  { id: 'met_col2d', branch: 'Métrologie', name: 'Colonne de Mesure 2D', moneyCost: 1350, rpCost: 18, req: 'met_manual', x: 500, y: 142, effect: 'Débloque Colonne 2D & +15% Détection', unlocks: 'Colonne 2D' },
+  { id: 'met_cmm', branch: 'Métrologie', name: 'Machine Tridimensionnelle MMT', moneyCost: 11000, rpCost: 60, req: 'met_col2d', x: 500, y: 82, effect: 'Débloque MMT 3D & Certification EN 9100', unlocks: 'MMT 3D' },
+  { id: 'met_scanner', branch: 'Métrologie', name: 'Contrôle Optique Automatisé', moneyCost: 52000, rpCost: 145, req: 'met_cmm', x: 500, y: 32, effect: 'Débloque Scanner Optique 3D (Inspection Auto x3)', unlocks: 'Scanner 3D' },
 
-  // Branche 3 : Qualité & Normes
-  { id: 'qual_basic', branch: 'quality', name: 'Procédures Qualité Atelier', costMoney: 1100, costRP: 10, prereqs: [], unlocks: 'Réduction des rebuts, +4 Qualité', effects: { quality: 4 }, desc: 'Standardise les fiches suiveuses et réduit les défauts de fabrication.' },
-  { id: 'qual_spc', branch: 'quality', name: 'Maîtrise Statistique (SPC)', costMoney: 7500, costRP: 45, prereqs: ['qual_basic'], unlocks: 'Correction auto des dérives (+5 Qual/Préc)', effects: { quality: 5, precision: 4 }, desc: 'Exploite les données de métrologie pour corriger les procédés.' },
-  { id: 'qual_iso9001', branch: 'quality', name: 'Certification ISO 9001', costMoney: 32000, costRP: 120, prereqs: ['qual_spc', 'metro_advanced'], unlocks: 'Certificat ISO 9001 (+10% prix vente, Contrats Niv.3)', effects: { certIso9001: true, priceBonus: 0.10 }, desc: 'Ouvre les appels d\'offres industriels exigeants et valorise vos pièces.' },
-  { id: 'qual_en9100', branch: 'quality', name: 'Certification EN 9100 Aéro', costMoney: 145000, costRP: 340, prereqs: ['qual_iso9001', 'metro_cmm'], unlocks: 'Certificat EN 9100 (+15% prix vente, Marchés Aéro)', effects: { certEn9100: true, priceBonus: 0.15 }, desc: 'Accès aux contrats stratégiques Aéronautique & Spatial.' },
+  // Branche 3 : Qualité
+  { id: 'qual_basic', branch: 'Qualité', name: 'Contrôle Réception & Tri', moneyCost: 0, rpCost: 0, req: null, x: 545, y: 230, effect: 'Active le tri Conforme / Rebut & Recyclage', unlocks: 'Départ' },
+  { id: 'qual_spc', branch: 'Qualité', name: 'Maîtrise Statistique (SPC)', moneyCost: 2400, rpCost: 24, req: 'qual_basic', x: 630, y: 175, effect: '+5 Qualité globale & -20% taux de défauts', unlocks: 'Procédé SPC' },
+  { id: 'qual_iso', branch: 'Qualité', name: 'Zéro Défaut & Assurance Qualité', moneyCost: 16000, rpCost: 72, req: 'qual_spc', crossReq: 'met_col2d', x: 725, y: 118, effect: '+8 Qualité, +6 Précision & -25% défauts', unlocks: 'Zéro Défaut' },
 
-  // Branche 4 : Méthodes & Industrialisation
-  { id: 'meth_setup', branch: 'methods', name: 'SMED & Réglages Rapides', costMoney: 1600, costRP: 12, prereqs: [], unlocks: '-10% temps de cycle global', effects: { cycleSpeed: 0.10 }, desc: 'Optimise les montages d\'usinage et réduit les temps morts.' },
-  { id: 'meth_tools', branch: 'methods', name: 'Ingénierie Outils Carbure', costMoney: 6800, costRP: 40, prereqs: ['meth_setup'], unlocks: 'Banc de Préréglage, -15% coûts op.', effects: { opCostReduction: 0.15, quality: 2 }, desc: 'Débloque le banc de préréglage et allonge la durée de vie des fraises.' },
-  { id: 'meth_flow', branch: 'methods', name: 'Flux Tirés & Manutention', costMoney: 22000, costRP: 90, prereqs: ['meth_tools'], unlocks: 'Pont Roulant 10T, Réappro Auto Matières', effects: { autoRestockUnlock: true, cycleSpeed: 0.08 }, desc: 'Débloque le réapprovisionnement automatique des matières premières.' },
-  { id: 'meth_lean', branch: 'methods', name: 'Usine Lean 4.0', costMoney: 92000, costRP: 240, prereqs: ['meth_flow'], unlocks: '-15% coût matières, +12% cadence', effects: { materialSave: 0.15, cycleSpeed: 0.12 }, desc: 'Optimisation des chutes matières et industrialisation avancée.' },
+  // Branche 4 : Méthodes
+  { id: 'meth_std', branch: 'Méthodes', name: 'Gammes Standardisées', moneyCost: 0, rpCost: 0, req: null, x: 575, y: 280, effect: 'Optimise la préparation des séries', unlocks: 'Départ' },
+  { id: 'meth_smed', branch: 'Méthodes', name: 'SMED & Changement Rapide', moneyCost: 3000, rpCost: 28, req: 'meth_std', x: 685, y: 280, effect: '+15% vitesse de cycle sur toutes les machines', unlocks: '+15% Cadence' },
+  { id: 'meth_lean', branch: 'Méthodes', name: 'Lean Manufacturing & Flux Tirés', moneyCost: 24000, rpCost: 85, req: 'meth_smed', crossReq: 'qual_spc', x: 805, y: 280, effect: '+25% vitesse de cycle & +12% valeur commerciale', unlocks: '+25% Cadence & Prix' },
 
   // Branche 5 : Automatisation
-  { id: 'auto_semi', branch: 'automation', name: 'Commercialisation Automatisée', costMoney: 1400, costRP: 10, prereqs: [], unlocks: 'Règles de Vente Automatique avancées', effects: { autoSellBonus: true }, desc: 'Configure des seuils de stock minimum et automatise vos expéditions.' },
-  { id: 'auto_conveyor', branch: 'automation', name: 'Convoyage Inter-Îlots', costMoney: 35000, costRP: 110, prereqs: ['auto_semi', 'meth_flow'], unlocks: 'Convoyeur Automatique', effects: { cycleSpeed: 0.08 }, desc: 'Débloque les convoyeurs automatisés entre les centres CNC.' },
-  { id: 'auto_robots', branch: 'automation', name: 'Robotique Mobile AGV', costMoney: 110000, costRP: 260, prereqs: ['auto_conveyor'], unlocks: 'Flotte Robots AGV Logistique', effects: { cycleSpeed: 0.10, quality: 2 }, desc: 'Alimente les îlots en autonomie complète.' },
-  { id: 'auto_cells', branch: 'automation', name: 'Cellules Robotisées 24/7', costMoney: 230000, costRP: 460, prereqs: ['auto_robots', 'prod_5axis'], unlocks: 'Cellule Robotisée Titane, Aube de Turbine HP', effects: { cycleSpeed: 0.12, precision: 3 }, desc: 'Sommet de l\'automatisation manufacturière sans surveillance.' },
+  { id: 'auto_manual', branch: 'Automatisation', name: 'Manutention Manuelle', moneyCost: 0, rpCost: 0, req: null, x: 545, y: 330, effect: 'Alimentation standard des postes', unlocks: 'Départ' },
+  { id: 'auto_conv', branch: 'Automatisation', name: 'Convoyeurs & Chargement', moneyCost: 7500, rpCost: 48, req: 'auto_manual', crossReq: 'meth_smed', x: 650, y: 392, effect: '+10% vitesse globale & flux inter-îlots', unlocks: 'Convoyeurs' },
+  { id: 'auto_robot', branch: 'Automatisation', name: 'Cellules Robotisées 6 Axes', moneyCost: 46000, rpCost: 135, req: 'auto_conv', crossReq: 'met_scanner', x: 765, y: 455, effect: '+25% vitesse globale & production continue', unlocks: 'Robots 6 Axes' },
 
-  // Branche 6 : Matériaux & Procédés
-  { id: 'mat_plastics', branch: 'materials', name: 'Polymères Techniques', costMoney: 2200, costRP: 18, prereqs: [], unlocks: 'Plastique POM/PEEK, Poulie Crantée', effects: {}, desc: 'Usinage rapide des polymères techniques à haute marge.' },
-  { id: 'mat_inox', branch: 'materials', name: 'Métallurgie Inox 316L', costMoney: 9800, costRP: 55, prereqs: ['mat_plastics', 'prod_3axis'], unlocks: 'Inox 316L, Engrenage Inox', effects: { quality: 2 }, desc: 'Maîtrise de la coupe des aciers inoxydables.' },
-  { id: 'mat_copper', branch: 'materials', name: 'Alliages Cuivreux', costMoney: 24000, costRP: 105, prereqs: ['mat_inox'], unlocks: 'Cuivre C360, Collecteur Thermique', effects: { precision: 2 }, desc: 'Usinage des pièces de conduction thermique et électronique.' },
-  { id: 'mat_titanium', branch: 'materials', name: 'Titane Aéronautique', costMoney: 88000, costRP: 230, prereqs: ['mat_copper', 'prod_5axis'], unlocks: 'Titane Ti-6Al-4V, Support Structurel Aéro', effects: { quality: 3 }, desc: 'Ouvre la fabrication des pièces critiques en titane.' }
+  // Branche 6 : Matériaux
+  { id: 'mat_base', branch: 'Matériaux', name: 'Alliages Légers & Aciers', moneyCost: 0, rpCost: 0, req: null, x: 455, y: 330, effect: 'Débloque Aluminium 6061 & Acier C45', unlocks: 'Départ' },
+  { id: 'mat_inox', branch: 'Matériaux', name: 'Inox 316L & Cuivreux', moneyCost: 3400, rpCost: 28, req: 'mat_base', x: 355, y: 392, effect: 'Débloque Inox 316L, Cuivre & Bague Laiton', unlocks: 'Inox + Cuivre' },
+  { id: 'mat_peek', branch: 'Matériaux', name: 'Polymères Techniques PEEK', moneyCost: 11500, rpCost: 55, req: 'mat_inox', x: 255, y: 452, effect: 'Débloque Plastique PEEK & Isolateur Haute Temp.', unlocks: 'Plastique PEEK' },
+  { id: 'mat_titanium', branch: 'Matériaux', name: 'Titane Aéronautique TA6V', moneyCost: 42000, rpCost: 130, req: 'mat_peek', crossReq: 'prod_5axis', x: 145, y: 500, effect: 'Débloque Titane TA6V & Carter Aéronautique', unlocks: 'Titane TA6V' },
+
+  // Branche 7 : RH & Recrutement
+  { id: 'rh_base', branch: 'RH', name: 'Intérim & Atelier', moneyCost: 0, rpCost: 0, req: null, x: 425, y: 280, effect: 'Débloque Caisse Standard (0.1% Secret)', unlocks: 'Départ' },
+  { id: 'rh_headhunt', branch: 'RH', name: 'Chasseurs de Têtes', moneyCost: 6500, rpCost: 42, req: 'rh_base', x: 315, y: 280, effect: 'Débloque Caisse Ingénierie (0% Malus, 0.35% Secret)', unlocks: 'Caisse Ingénierie' },
+  { id: 'rh_exec', branch: 'RH', name: 'Recrutement Direction GMP', moneyCost: 48000, rpCost: 145, req: 'rh_headhunt', x: 195, y: 280, effect: 'Débloque Caisse Direction GMP (1% Secret, 6% Mythique)', unlocks: 'Caisse Direction' },
+  { id: 'rh_academy', branch: 'RH', name: 'Académie & Tutorat GMP', moneyCost: 165000, rpCost: 290, req: 'rh_exec', crossReq: 'qual_iso', x: 80, y: 280, effect: '+15% efficacité des opérateurs & réduction coûts RH', unlocks: '+15% Bonus RH' }
 ];
 
-// ============================================================================
-// MODULE 5 : PERSONNEL SPÉCIALISTE (PRÉSERVATION DES 12 PERSONNAGES & AVATARS)
-// Les cartes n'inventent plus d'argent magique : elles améliorent la VITESSE,
-// la QUALITÉ et la PRÉCISION réelles de la machine sur laquelle elles travaillent !
-// ============================================================================
-const RARITY_META = {
-  COMMON: { label: 'Commun', gradient: 'from-slate-500 via-slate-600 to-slate-800', text: 'text-slate-300', glow: '#94a3b8', foil: false },
-  RARE: { label: 'Rare', gradient: 'from-cyan-400 via-blue-600 to-indigo-900', text: 'text-cyan-300', glow: '#22d3ee', foil: false },
-  EPIC: { label: 'Épique', gradient: 'from-fuchsia-500 via-purple-600 to-indigo-950', text: 'text-purple-300', glow: '#c084fc', foil: true },
-  LEGENDARY: { label: 'Légendaire', gradient: 'from-yellow-300 via-amber-500 to-orange-700', text: 'text-amber-300', glow: '#fbbf24', foil: true },
-  MYTHIC: { label: 'Mythique', gradient: 'from-rose-400 via-red-600 to-slate-950', text: 'text-rose-400', glow: '#f43f5e', foil: true }
-};
+const CRATE_TIERS = [
+  {
+    id: 'standard',
+    name: 'Caisse Standard',
+    subtitle: 'Recrutement Atelier',
+    baseCost: 250,
+    costMult: 1.26,
+    reqTech: null,
+    badgeColor: 'text-sky-400 border-sky-500/40 bg-sky-950/50',
+    accent: '#38bdf8',
+    weights: { secret: 0.1, mythique: 1.0, legendaire: 5.0, epique: 12.0, rare: 28.0, commun: 47.0, malus: 6.9 }
+  },
+  {
+    id: 'engineering',
+    name: 'Caisse Ingénierie',
+    subtitle: 'Zéro Malus • Haute Qualification',
+    baseCost: 2400,
+    costMult: 1.32,
+    reqTech: 'rh_headhunt',
+    badgeColor: 'text-purple-400 border-purple-500/40 bg-purple-950/50',
+    accent: '#c084fc',
+    weights: { secret: 0.35, mythique: 2.65, legendaire: 12.0, epique: 27.0, rare: 40.0, commun: 18.0, malus: 0 }
+  },
+  {
+    id: 'direction',
+    name: 'Caisse Direction GMP',
+    subtitle: 'Élite • 1% Secret Garanti dans le Pool',
+    baseCost: 18500,
+    costMult: 1.38,
+    reqTech: 'rh_exec',
+    badgeColor: 'text-amber-400 border-amber-500/40 bg-amber-950/50',
+    accent: '#fbbf24',
+    weights: { secret: 1.0, mythique: 6.0, legendaire: 24.0, epique: 41.0, rare: 28.0, commun: 0, malus: 0 }
+  }
+];
 
 const EMPLOYEES_CATALOG = [
-  { id: 'emp_mst', name: 'Ms T', rarity: 'MYTHIC', specialty: 'ALL', specName: 'Toutes Machines', speedBonus: 0.35, qualBonus: 12, precBonus: 14, title: 'Directrice Métrologie ISO' },
-  { id: 'emp_marty', name: 'Mme Marty', rarity: 'LEGENDARY', specialty: 'mill_5axis', specName: 'Centre 5 Axes', speedBonus: 0.28, qualBonus: 9, precBonus: 10, title: 'Experte UGV 5 Axes' },
-  { id: 'emp_blanchard', name: 'Mr Blanchard', rarity: 'LEGENDARY', specialty: 'aero_cell', specName: 'Cellule Robotisée', speedBonus: 0.30, qualBonus: 8, precBonus: 10, title: 'Architecte Robotique' },
-  { id: 'emp_graya', name: 'Mr Graya', rarity: 'LEGENDARY', specialty: 'edm_wire', specName: 'Électroérosion', speedBonus: 0.25, qualBonus: 10, precBonus: 11, title: 'Maître Électroérosion' },
-  { id: 'emp_renaud', name: 'Mme Renaud', rarity: 'EPIC', specialty: 'mill_3axis', specName: 'Centre 3 Axes', speedBonus: 0.20, qualBonus: 6, precBonus: 7, title: 'Ingénieure FAO 3 Axes' },
-  { id: 'emp_pietri', name: 'Mr Pietri', rarity: 'EPIC', specialty: 'lathe_sub', specName: 'Tour CNC', speedBonus: 0.22, qualBonus: 6, precBonus: 6, title: 'Spécialiste Bi-Broche' },
-  { id: 'emp_pompidou', name: 'Pompidou', rarity: 'RARE', specialty: 'mill_3axis', specName: 'Centre 3 Axes', speedBonus: 0.14, qualBonus: 4, precBonus: 4, title: 'Régleur Fraiseur CN' },
-  { id: 'emp_lauris', name: 'Lauris Rigal', rarity: 'RARE', specialty: 'lathe_conv', specName: 'Tour Conventionnel', speedBonus: 0.15, qualBonus: 5, precBonus: 4, title: 'Tourneur Précision' },
-  { id: 'emp_pierre', name: 'Pierre Montant', rarity: 'RARE', specialty: 'drill_saw', specName: 'Scie & Perceuse', speedBonus: 0.16, qualBonus: 4, precBonus: 4, title: 'Chef Débit & Ajustage' },
-  { id: 'emp_sebastien', name: 'Sebastien', rarity: 'RARE', specialty: 'lathe_sub', specName: 'Tour CNC', speedBonus: 0.15, qualBonus: 4, precBonus: 5, title: 'Opérateur Programmateur' },
-  { id: 'emp_cedric', name: 'Cedric Castagnetti', rarity: 'COMMON', specialty: 'drill_saw', specName: 'Scie & Perceuse', speedBonus: 0.08, qualBonus: 2, precBonus: 2, title: 'Opérateur Atelier' },
-  { id: 'emp_elliot', name: 'Elliot', rarity: 'COMMON', specialty: 'lathe_conv', specName: 'Tour Conventionnel', speedBonus: 0.08, qualBonus: 2, precBonus: 2, title: 'Apprenti Usineur' }
+  // SECRET (0.1%)
+  { id: 'emp_klepacz', name: 'Mr Klepacz', rarity: 'secret', role: 'Grand Maître UGV', baseMult: 1.50, qualBonus: 15, specialty: 'all', specialtyLabel: 'Toutes Machines', hair: '#cbd5e1', skin: '#f1c27d', shirt: '#be123c', glasses: true },
+  // MYTHIQUE (1%)
+  { id: 'emp_castagnetti', name: 'Cedric Castagnetti', rarity: 'mythique', role: 'Architecte 5 Axes', baseMult: 0.95, qualBonus: 11, specialty: 'all', specialtyLabel: 'Toutes Machines', hair: '#1e293b', skin: '#e0ac69', shirt: '#b91c1c', glasses: false },
+  { id: 'emp_mst', name: 'Ms T', rarity: 'mythique', role: 'Directrice Production', baseMult: 0.90, qualBonus: 10, specialty: 'all', specialtyLabel: 'Toutes Machines', hair: '#7c2d12', skin: '#f1c27d', shirt: '#991b1b', glasses: true },
+  // LÉGENDAIRE (5%)
+  { id: 'emp_pompidou', name: 'Pompidou', rarity: 'legendaire', role: 'Stratège Industriel', baseMult: 0.65, qualBonus: 8, specialty: 'cnc_5axis', specialtyLabel: 'Centre 5 Axes', hair: '#94a3b8', skin: '#f1c27d', shirt: '#b45309', glasses: true },
+  { id: 'emp_lorriot', name: 'Mr Lorriot', rarity: 'legendaire', role: 'Expert FAO & Cinématique', baseMult: 0.62, qualBonus: 8, specialty: 'edm_cell', specialtyLabel: 'Cellule EDM', hair: '#334155', skin: '#e0ac69', shirt: '#d97706', glasses: false },
+  { id: 'emp_marty', name: 'Mme Marty', rarity: 'legendaire', role: 'Cheffe Métrologie', baseMult: 0.60, qualBonus: 9, specialty: 'cnc_mill_3x', specialtyLabel: 'Fraiseuse 3 Axes', hair: '#92400e', skin: '#ffdbac', shirt: '#b45309', glasses: true },
+  { id: 'emp_blanchard', name: 'Mr Blanchard', rarity: 'legendaire', role: 'Maître Tourneur', baseMult: 0.58, qualBonus: 7, specialty: 'bi_spindle', specialtyLabel: 'Tour Bi-Broche', hair: '#64748b', skin: '#f1c27d', shirt: '#92400e', glasses: false },
+  { id: 'emp_graya', name: 'Mr Graya', rarity: 'legendaire', role: 'Ingénieur Matériaux', baseMult: 0.60, qualBonus: 8, specialty: 'slm_laser', specialtyLabel: 'Fonderie SLM', hair: '#0f172a', skin: '#c68642', shirt: '#d97706', glasses: true },
+  // ÉPIQUE (12%)
+  { id: 'emp_jeulin', name: 'Mr Jeulin', rarity: 'epique', role: 'Spécialiste Fabrication', baseMult: 0.42, qualBonus: 6, specialty: 'cnc_mill_3x', specialtyLabel: 'Fraiseuse 3 Axes', hair: '#475569', skin: '#f1c27d', shirt: '#6d28d9', glasses: true },
+  { id: 'emp_brun', name: 'Mr Brun', rarity: 'epique', role: 'Référent Méthodes', baseMult: 0.40, qualBonus: 5, specialty: 'bi_spindle', specialtyLabel: 'Tour Bi-Broche', hair: '#451a03', skin: '#e0ac69', shirt: '#7e22ce', glasses: false },
+  { id: 'emp_renaud', name: 'Mme Renaud', rarity: 'epique', role: 'Ingénieure Qualité', baseMult: 0.38, qualBonus: 7, specialty: 'cnc_5axis', specialtyLabel: 'Centre 5 Axes', hair: '#b45309', skin: '#ffdbac', shirt: '#5b21b6', glasses: true },
+  { id: 'emp_pietri', name: 'Mr Pietri', rarity: 'epique', role: 'Technicien UGV', baseMult: 0.40, qualBonus: 5, specialty: 'manual_lathe', specialtyLabel: 'Tour Conv.', hair: '#1e293b', skin: '#e0ac69', shirt: '#6b21a8', glasses: false },
+  // RARE (28%)
+  { id: 'emp_julien', name: 'Julien', rarity: 'rare', role: 'Régleur CN', baseMult: 0.26, qualBonus: 4, specialty: 'cnc_mill_3x', specialtyLabel: 'Fraiseuse 3 Axes', hair: '#78350f', skin: '#f1c27d', shirt: '#0369a1', glasses: false },
+  { id: 'emp_lauris', name: 'Lauris Rigal', rarity: 'rare', role: 'Opérateur Tournage', baseMult: 0.25, qualBonus: 3, specialty: 'manual_lathe', specialtyLabel: 'Tour Conv.', hair: '#334155', skin: '#f1c27d', shirt: '#0284c7', glasses: false },
+  { id: 'emp_pierre', name: 'Pierre Montant', rarity: 'rare', role: 'Contrôleur Atelier', baseMult: 0.24, qualBonus: 4, specialty: 'drill_saw', specialtyLabel: 'Perceuse/Scie', hair: '#92400e', skin: '#e0ac69', shirt: '#0369a1', glasses: true },
+  { id: 'emp_sebastien', name: 'Sebastien', rarity: 'rare', role: 'Fraiseur Confirmé', baseMult: 0.25, qualBonus: 3, specialty: 'cnc_mill_3x', specialtyLabel: 'Fraiseuse 3 Axes', hair: '#1e293b', skin: '#f1c27d', shirt: '#075985', glasses: false },
+  // COMMUN (47%)
+  { id: 'emp_hugo', name: 'Hugo', rarity: 'commun', role: 'Apprenti GMP', baseMult: 0.14, qualBonus: 2, specialty: 'drill_saw', specialtyLabel: 'Perceuse/Scie', hair: '#a16207', skin: '#ffdbac', shirt: '#334155', glasses: false },
+  { id: 'emp_elliot', name: 'Elliot', rarity: 'commun', role: 'Opérateur Débutant', baseMult: 0.12, qualBonus: 2, specialty: 'manual_lathe', specialtyLabel: 'Tour Conv.', hair: '#475569', skin: '#f1c27d', shirt: '#475569', glasses: false },
+  // MALUS (6.9%)
+  { id: 'emp_marylou', name: 'Marylou', rarity: 'malus', role: 'Fraise Casse-Outils', baseMult: -0.25, qualBonus: -6, specialty: 'all', specialtyLabel: 'Malus (-25%)', hair: '#be185d', skin: '#ffdbac', shirt: '#4d7c0f', glasses: true },
+  { id: 'emp_werda', name: 'Mme Werda', rarity: 'malus', role: 'Origine d’Arrêt Machine', baseMult: -0.30, qualBonus: -8, specialty: 'all', specialtyLabel: 'Malus (-30%)', hair: '#1e293b', skin: '#e0ac69', shirt: '#3f6212', glasses: true },
+  { id: 'emp_benhenni', name: 'Mr Ben henni', rarity: 'malus', role: 'Déréglage Permanent', baseMult: -0.35, qualBonus: -10, specialty: 'all', specialtyLabel: 'Malus (-35%)', hair: '#0f172a', skin: '#c68642', shirt: '#365314', glasses: false }
 ];
 
-const CHEST_ODDS = { COMMON: 52, RARE: 30, EPIC: 12, LEGENDARY: 5, MYTHIC: 1 };
-const AVATAR_SPRITE_POSITIONS = {
-  emp_cedric:    { x: '0%',   y: '0%'   },
-  emp_marty:     { x: '25%',  y: '0%'   },
-  emp_lauris:    { x: '50%',  y: '0%'   },
-  emp_elliot:    { x: '75%',  y: '0%'   },
-  emp_blanchard: { x: '100%', y: '0%'   },
-  emp_pompidou:  { x: '0%',   y: '100%' },
-  emp_renaud:    { x: '25%',  y: '100%' },
-  emp_pietri:    { x: '50%',  y: '100%' },
-  emp_mst:       { x: '75%',  y: '100%' },
-  emp_pierre:    { x: '100%', y: '100%' },
+const RARITY_ORDER = { secret: 7, mythique: 6, legendaire: 5, epique: 4, rare: 3, commun: 2, malus: 1 };
+
+const RARITY_CONFIG = {
+  secret: { label: 'SECRET (0.1%)', hex: '#fb7185', badge: 'bg-rose-950/90 text-rose-300 border-rose-500', border: 'border-rose-500 shadow-rose-500/30' },
+  mythique: { label: 'MYTHIQUE', hex: '#f87171', badge: 'bg-red-950/90 text-red-300 border-red-500', border: 'border-red-500 shadow-red-500/20' },
+  legendaire: { label: 'LÉGENDAIRE', hex: '#fbbf24', badge: 'bg-amber-950/90 text-amber-300 border-amber-500', border: 'border-amber-500 shadow-amber-500/20' },
+  epique: { label: 'ÉPIQUE', hex: '#c084fc', badge: 'bg-purple-950/90 text-purple-300 border-purple-500', border: 'border-purple-500 shadow-purple-500/20' },
+  rare: { label: 'RARE', hex: '#38bdf8', badge: 'bg-sky-950/90 text-sky-300 border-sky-500', border: 'border-sky-500 shadow-sky-500/20' },
+  commun: { label: 'COMMUN', hex: '#94a3b8', badge: 'bg-slate-900 text-slate-300 border-slate-600', border: 'border-slate-700' },
+  malus: { label: 'MALUS', hex: '#84cc16', badge: 'bg-lime-950/90 text-lime-300 border-lime-600', border: 'border-lime-600/80' }
 };
 
-// ============================================================================
-// MODULE 6 : MISSIONS DYNAMIQUES & GÉNÉRATEUR D'APPELS D'OFFRES
-// ============================================================================
 const MISSIONS_CATALOG = [
-  // Missions Principales (guidage progressif)
-  { id: 'm_first_machine', type: 'main', title: 'Premier Équipement', desc: 'Installez au moins 1 machine de production dans l\'atelier.', rewardMoney: 400, rewardRP: 10, rewardRep: 3, check: (s) => s.stats.machinesInstalled >= 1, progress: (s) => [Math.min(1, s.stats.machinesInstalled), 1] },
-  { id: 'm_prod_20', type: 'main', title: 'Mise en Route Atelier', desc: 'Fabriquez 20 pièces mécaniques au total.', rewardMoney: 750, rewardRP: 15, rewardRep: 4, check: (s) => s.stats.totalPartsProduced >= 20, progress: (s) => [Math.min(20, s.stats.totalPartsProduced), 20] },
-  { id: 'm_first_sale', type: 'main', title: 'Premières Facturations', desc: 'Réalisez 1 000 € de chiffre d\'affaires cumulé.', rewardMoney: 900, rewardRP: 18, rewardRep: 4, check: (s) => s.stats.totalRevenue >= 1000, progress: (s) => [Math.min(1000, Math.floor(s.stats.totalRevenue)), 1000] },
-  { id: 'm_first_metro', type: 'main', title: 'Rigueur Métrologique', desc: 'Acquérez votre premier équipement de métrologie et contrôlez 10 pièces.', rewardMoney: 1500, rewardRP: 25, rewardRep: 6, check: (s) => s.metrology.length >= 1 && s.stats.totalInspected >= 10, progress: (s) => [Math.min(10, s.stats.totalInspected), 10] },
-  { id: 'm_first_tech', type: 'main', title: 'Bureau R&D Actif', desc: 'Débloquez 2 compétences dans l\'Arbre Technologique.', rewardMoney: 2200, rewardRP: 30, rewardRep: 5, check: (s) => s.unlockedTechs.length >= 2, progress: (s) => [Math.min(2, s.unlockedTechs.length), 2] },
-  { id: 'm_first_contract', type: 'main', title: 'Fournisseur Agréé', desc: 'Livrez et réussissez votre premier Appel d\'Offres client.', rewardMoney: 4500, rewardRP: 50, rewardRep: 10, check: (s) => s.stats.contractsCompleted >= 1, progress: (s) => [Math.min(1, s.stats.contractsCompleted), 1] },
-  { id: 'm_prod_250', type: 'main', title: 'Production en Série', desc: 'Produisez 250 pièces cumulées dans votre usine.', rewardMoney: 9500, rewardRP: 80, rewardRep: 8, check: (s) => s.stats.totalPartsProduced >= 250, progress: (s) => [Math.min(250, s.stats.totalPartsProduced), 250] },
-  { id: 'm_qual_90', type: 'main', title: 'Excellence Industrielle', desc: 'Produisez 40 pièces atteignant une qualité ≥ 90/100.', rewardMoney: 24000, rewardRP: 140, rewardRep: 12, check: (s) => s.stats.highQualityParts >= 40, progress: (s) => [Math.min(40, s.stats.highQualityParts), 40] },
-  { id: 'm_iso9001', type: 'main', title: 'Cap ISO 9001', desc: 'Obtenez la certification ISO 9001 (Tech + Projecteur Optique).', rewardMoney: 55000, rewardRP: 200, rewardRep: 15, check: (s) => s.certs.iso9001, progress: (s) => [s.certs.iso9001 ? 1 : 0, 1] },
-  { id: 'm_en9100', type: 'main', title: 'Fleuron Aéronautique', desc: 'Obtenez la certification EN 9100 et livrez 5 contrats.', rewardMoney: 180000, rewardRP: 450, rewardRep: 20, check: (s) => s.certs.en9100 && s.stats.contractsCompleted >= 5, progress: (s) => [Math.min(5, s.stats.contractsCompleted), 5] },
-
-  // Missions Secondaires
-  { id: 's_park_4', type: 'side', title: 'Atelier Complet', desc: 'Installez 4 machines de production simultanément.', rewardMoney: 3000, rewardRP: 35, rewardRep: 5, check: (s) => s.stats.machinesInstalled >= 4, progress: (s) => [Math.min(4, s.stats.machinesInstalled), 4] },
-  { id: 's_rev_50k', type: 'side', title: 'PME Rentable', desc: 'Atteignez 50 000 € de chiffre d\'affaires cumulé.', rewardMoney: 12000, rewardRP: 95, rewardRep: 10, check: (s) => s.stats.totalRevenue >= 50000, progress: (s) => [Math.min(50000, Math.floor(s.stats.totalRevenue)), 50000] },
-  { id: 's_materials_4', type: 'side', title: 'Multi-Matériaux', desc: 'Débloquez au moins 2 technologies de la branche Matériaux.', rewardMoney: 16000, rewardRP: 110, rewardRep: 8, check: (s) => s.unlockedTechs.filter(t => t.startsWith('mat_')).length >= 2, progress: (s) => [Math.min(2, s.unlockedTechs.filter(t => t.startsWith('mat_')).length), 2] }
-];
-
-const CLIENTS_POOL = [
-  { id: 'c_local', name: 'Ateliers Aquitaine Méca', tier: 1, minRep: 0, badge: 'Régional' },
-  { id: 'c_auto', name: 'MecaSud Automobile', tier: 2, minRep: 25, badge: 'Automobile' },
-  { id: 'c_hydro', name: 'HydroTech Systèmes', tier: 3, minRep: 45, reqCert: 'iso9001', badge: 'ISO 9001' },
-  { id: 'c_aero', name: 'AeroNova Industries', tier: 4, minRep: 70, reqCert: 'en9100', badge: 'EN 9100 Aéro' },
-  { id: 'c_space', name: 'Ariane Propulsion Labs', tier: 5, minRep: 85, reqCert: 'en9100', badge: 'Spatial' }
+  { id: 'm_produce_10', title: 'Premiers Copeaux', desc: 'Produire 10 pièces dans votre atelier.', target: 10, statKey: 'partsProduced', rewardMoney: 180, rewardRP: 8 },
+  { id: 'm_sell_25', title: 'Premières Expéditions', desc: 'Vendre 25 pièces conformes.', target: 25, statKey: 'partsSold', rewardMoney: 450, rewardRP: 15 },
+  { id: 'm_inspect_30', title: 'Rigueur Métrologique', desc: 'Contrôler 30 pièces au laboratoire.', target: 30, statKey: 'partsInspected', rewardMoney: 950, rewardRP: 25 },
+  { id: 'm_contract_3', title: 'Fournisseur Fiable', desc: 'Honorer 3 appels d’offres clients.', target: 3, statKey: 'contractsCompleted', rewardMoney: 3200, rewardRP: 45 },
+  { id: 'm_produce_250', title: 'Cadence Industrielle', desc: 'Produire 250 pièces au total.', target: 250, statKey: 'partsProduced', rewardMoney: 12000, rewardRP: 90 },
+  { id: 'm_contract_12', title: 'Partenaire Aéronautique', desc: 'Honorer 12 appels d’offres.', target: 12, statKey: 'contractsCompleted', rewardMoney: 55000, rewardRP: 220 }
 ];
 
 // ============================================================================
-// MODULE 7 : MOTEURS DE CALCUL CENTRALISÉS (QUALITÉ, ÉCONOMIE, CONTRATS, MIGRATION)
-// Aucune formule métier n'est dispersée dans les composants UI.
+// 3. UTILITAIRES DE FORMATAGE & GÉNÉRATION DE CONTRATS
 // ============================================================================
-const FactoryEngine = {
-  /** Agrège les effets passifs de toutes les technologies débloquées */
-  getTechEffects(unlockedTechs) {
-    const res = {
-      cycleSpeed: 0,
-      quality: 0,
-      precision: 0,
-      opCostReduction: 0,
-      materialSave: 0,
-      priceBonus: 0,
-      autoRestockUnlock: false,
-      autoInspectUnlock: false,
-      certIso9001: false,
-      certEn9100: false
-    };
-    unlockedTechs.forEach(id => {
-      const t = TECH_TREE.find(x => x.id === id);
-      if (!t || !t.effects) return;
-      if (t.effects.cycleSpeed) res.cycleSpeed += t.effects.cycleSpeed;
-      if (t.effects.quality) res.quality += t.effects.quality;
-      if (t.effects.precision) res.precision += t.effects.precision;
-      if (t.effects.opCostReduction) res.opCostReduction += t.effects.opCostReduction;
-      if (t.effects.materialSave) res.materialSave += t.effects.materialSave;
-      if (t.effects.priceBonus) res.priceBonus += t.effects.priceBonus;
-      if (t.effects.autoRestockUnlock) res.autoRestockUnlock = true;
-      if (t.effects.autoInspectUnlock) res.autoInspectUnlock = true;
-      if (t.effects.certIso9001) res.certIso9001 = true;
-      if (t.effects.certEn9100) res.certEn9100 = true;
-    });
-    return res;
-  },
+function formatMoney(val) {
+  const n = Number(val) || 0;
+  if (Math.abs(n) >= 1e9) return `${(n / 1e9).toFixed(2)} Md$`;
+  if (Math.abs(n) >= 1e6) return `${(n / 1e6).toFixed(2)} M$`;
+  if (Math.abs(n) >= 1e4) return `${(n / 1e3).toFixed(1)} k$`;
+  return `${n.toFixed(0)} $`;
+}
 
-  /** Agrège les capacités du laboratoire de métrologie */
-  getMetrologyProfile(ownedMetrologyIds) {
-    const owned = METROLOGY_CATALOG.filter(m => ownedMetrologyIds.includes(m.id));
-    if (owned.length === 0) {
-      return { detectionRate: 0, maxMeasurablePrecision: 0, processFeedbackBonus: 0, autoInspect: false, hasProjector: false, hasCMM: false };
-    }
-    const bestDetection = Math.max(...owned.map(m => m.detectionRate));
-    const maxPrecision = Math.max(...owned.map(m => m.maxMeasurablePrecision));
-    const bestFeedback = Math.max(...owned.map(m => m.processFeedbackBonus));
-    const autoInspect = owned.some(m => m.autoInspect);
-    return {
-      detectionRate: bestDetection,
-      maxMeasurablePrecision: maxPrecision,
-      processFeedbackBonus: bestFeedback,
-      autoInspect,
-      hasProjector: ownedMetrologyIds.includes('profile_proj') || ownedMetrologyIds.includes('cmm_3d') || ownedMetrologyIds.includes('opt_scanner'),
-      hasCMM: ownedMetrologyIds.includes('cmm_3d') || ownedMetrologyIds.includes('opt_scanner')
-    };
-  },
-
-  /** Agrège les équipements de support & le revêtement de sol */
-  getSupportProfile(ownedSupportIds, atelierFloorId) {
-    const owned = SUPPORT_CATALOG.filter(s => ownedSupportIds.includes(s.id));
-    const floor = ATELIER_UPGRADES.floors.find(f => f.id === atelierFloorId) || ATELIER_UPGRADES.floors[0];
-    return {
-      cycleBonus: owned.reduce((acc, s) => acc + s.cycleBonus, 0),
-      qualityBonus: owned.reduce((acc, s) => acc + s.qualityBonus, 0) + (floor.qualBonus || 0),
-      precisionBonus: owned.reduce((acc, s) => acc + s.precisionBonus, 0) + (floor.precBonus || 0),
-      opCostReduction: Math.min(0.65, owned.reduce((acc, s) => acc + s.opCostReduction, 0))
-    };
-  },
-
-  /** Calcule les certifications actives (exigent à la fois Tech + Métrologie réelle) */
-  getCertifications(unlockedTechs, ownedMetrologyIds, reputation) {
-    const techFx = this.getTechEffects(unlockedTechs);
-    const metro = this.getMetrologyProfile(ownedMetrologyIds);
-    const iso9001 = Boolean(techFx.certIso9001 && metro.hasProjector && (reputation.quality || 0) >= 40);
-    const en9100 = Boolean(techFx.certEn9100 && metro.hasCMM && (reputation.quality || 0) >= 65);
-    return { iso9001, en9100 };
-  },
-
-  /** Bonus réel d'un employé affecté sur une machine */
-  getOperatorBonus(employeeRecord, machineId) {
-    if (!employeeRecord) return { speed: 0, quality: 0, precision: 0, isSynergy: false, name: null };
-    const tpl = EMPLOYEES_CATALOG.find(e => e.id === employeeRecord.templateId);
-    if (!tpl) return { speed: 0, quality: 0, precision: 0, isSynergy: false, name: null };
-    const stars = employeeRecord.stars || 1;
-    const starScale = 1 + (stars - 1) * 0.25;
-    const isSynergy = tpl.specialty === machineId || tpl.specialty === 'ALL';
-    const synScale = isSynergy ? 1.5 : 1.0;
-    return {
-      speed: tpl.speedBonus * starScale * synScale,
-      quality: Math.round(tpl.qualBonus * starScale * synScale),
-      precision: Math.round(tpl.precBonus * starScale * synScale),
-      isSynergy,
-      name: tpl.name,
-      stars
-    };
-  },
-
-  /** Calcul transparent du temps de cycle, de la qualité et de la précision d'un poste */
-  evaluateSlotProduction(slot, stateContext) {
-    const mac = MACHINES_CATALOG.find(m => m.id === slot.machineId);
-    const part = PARTS_CATALOG.find(p => p.id === slot.partId);
-    if (!mac || !part) return null;
-
-    const mat = MATERIALS_CATALOG.find(m => m.id === part.materialId);
-    const empRec = slot.employeeId ? stateContext.inventory.find(e => e.uid === slot.employeeId) : null;
-    const opBonus = this.getOperatorBonus(empRec, mac.id);
-    const techFx = stateContext.techFx;
-    const metro = stateContext.metro;
-    const support = stateContext.support;
-
-    // Temps de cycle effectif (en secondes)
-    const speedFactor = 1 + techFx.cycleSpeed + support.cycleBonus + opBonus.speed;
-    const cycleTime = Math.max(2.0, (part.baseCycleTime * mac.cycleMultiplier) / speedFactor);
-
-    // Matière consommée par cycle (avec réduction Lean éventuelle)
-    const qtyPerCycle = mac.qtyPerCycle;
-    const matPerPiece = part.materialKg * (1 - techFx.materialSave);
-    const materialCostPerCycle = qtyPerCycle * matPerPiece;
-
-    // Coût de fonctionnement par cycle
-    const opReduction = Math.min(0.75, techFx.opCostReduction + support.opCostReduction);
-    const opCost = mac.opCostPerCycle * (1 - opReduction);
-    const unitCost = (matPerPiece * (mat ? mat.pricePerKg : 6)) + (opCost / qtyPerCycle);
-
-    // Qualité de fabrication réelle (0-100) — explicable facteur par facteur
-    const diffPenalty = (part.difficulty - 1) * 2.5;
-    const matMod = mat ? mat.machinability : 0;
-    const processFeedback = techFx.quality > 0 ? metro.processFeedbackBonus : Math.floor(metro.processFeedbackBonus * 0.5);
-
-    const rawQuality = mac.baseQuality + matMod - diffPenalty + techFx.quality + support.qualityBonus + opBonus.quality + processFeedback;
-    const quality = clamp(Math.round(rawQuality), 25, 100);
-
-    // Précision dimensionnelle distincte (0-100)
-    const rawPrecision = mac.basePrecision - (part.difficulty - 1) * 2.0 + techFx.precision + support.precisionBonus + opBonus.precision + processFeedback;
-    const precision = clamp(Math.round(rawPrecision), 25, 100);
-
-    const isConforming = quality >= part.minQuality && precision >= part.precisionReq;
-
-    return {
-      mac,
-      part,
-      mat,
-      qtyPerCycle,
-      cycleTime,
-      materialCostPerCycle,
-      opCost,
-      unitCost,
-      quality,
-      precision,
-      isConforming,
-      opBonus,
-      breakdown: [
-        { label: `Base ${mac.name}`, q: mac.baseQuality, p: mac.basePrecision },
-        { label: `Matière & Difficulté`, q: Math.round(matMod - diffPenalty), p: Math.round(-(part.difficulty - 1) * 2) },
-        { label: `Technologies & Support`, q: techFx.quality + support.qualityBonus, p: techFx.precision + support.precisionBonus },
-        { label: `Rétroaction Métrologie`, q: processFeedback, p: processFeedback },
-        ...(opBonus.name ? [{ label: `Opérateur ${opBonus.name}${opBonus.isSynergy ? ' (Synergie)' : ''}`, q: opBonus.quality, p: opBonus.precision }] : [])
-      ]
-    };
-  },
-
-  /** Prix unitaire de vente en fonction de la qualité, du statut, du marché et des certifications */
-  computeUnitSalePrice(lot, marketDemand, certs, techFx) {
-    const part = PARTS_CATALOG.find(p => p.id === lot.partId);
-    if (!part) return 0;
-    const demandMult = marketDemand[lot.partId] || 1.0;
-
-    if (lot.status === 'non_conforming') {
-      // Pièce non conforme vendue en déclassé à prix réduit (40%)
-      return Math.max(1, part.baseValue * 0.40 * demandMult);
-    }
-
-    // Multiplicateur de qualité (de 0.75x à 1.40x)
-    const qualityFactor = 0.70 + (lot.quality / 100) * 0.65;
-    // Bonus de certification sur pièces contrôlées conformes
-    let certBonus = 1.0;
-    if (lot.status === 'conforming') {
-      certBonus += 0.08; // Prime de traçabilité lot contrôlé
-      if (certs.iso9001) certBonus += 0.10;
-      if (certs.en9100) certBonus += 0.15;
-    }
-    return part.baseValue * qualityFactor * demandMult * certBonus * (1 + (techFx?.priceBonus || 0) * 0.25);
-  },
-
-  /** Ajoute ou fusionne un lot dans l'inventaire agrégé (évite les objets par pièce) */
-  mergeBatchIntoLots(existingLots, newBatch) {
-    // Regroupe par palier de 2 points de qualité/précision pour garder un inventaire propre et performant
-    const qBucket = Math.round(newBatch.quality / 2) * 2;
-    const pBucket = Math.round(newBatch.precision / 2) * 2;
-    const idx = existingLots.findIndex(
-      l => l.partId === newBatch.partId &&
-           l.status === newBatch.status &&
-           Math.abs(l.quality - qBucket) <= 2 &&
-           Math.abs(l.precision - pBucket) <= 2
-    );
-    if (idx >= 0) {
-      const next = [...existingLots];
-      const cur = next[idx];
-      const totalQty = cur.quantity + newBatch.quantity;
-      next[idx] = {
-        ...cur,
-        quantity: totalQty,
-        quality: Math.round((cur.quality * cur.quantity + newBatch.quality * newBatch.quantity) / totalQty),
-        precision: Math.round((cur.precision * cur.quantity + newBatch.precision * newBatch.quantity) / totalQty),
-        unitCost: (cur.unitCost * cur.quantity + newBatch.unitCost * newBatch.quantity) / totalQty
-      };
-      return next;
-    }
-    return [
-      ...existingLots,
-      {
-        lotId: `lot_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        partId: newBatch.partId,
-        materialId: newBatch.materialId,
-        quantity: newBatch.quantity,
-        reserved: 0,
-        quality: newBatch.quality,
-        precision: newBatch.precision,
-        unitCost: newBatch.unitCost,
-        status: newBatch.status, // 'uninspected' | 'conforming' | 'non_conforming'
-        actuallyConforming: newBatch.actuallyConforming,
-        createdAt: Date.now()
-      }
-    ];
-  },
-
-  /** Génère des appels d'offres cohérents avec le niveau de l'entreprise */
-  generateContract(unlockedTechs, repGlobal, certs) {
-    const availableParts = PARTS_CATALOG.filter(p => !p.reqTech || unlockedTechs.includes(p.reqTech));
-    const eligibleClients = CLIENTS_POOL.filter(c => {
-      if (repGlobal < c.minRep - 15) return false;
-      return true;
-    });
-    const client = eligibleClients[Math.floor(Math.random() * eligibleClients.length)] || CLIENTS_POOL[0];
-    const part = availableParts[Math.floor(Math.random() * availableParts.length)] || PARTS_CATALOG[0];
-
-    const qty = Math.round((12 + client.tier * 14 + Math.random() * 18) / 5) * 5;
-    const minQuality = clamp(part.minQuality + (client.tier - 1) * 4, 55, 95);
-    const minPrecision = clamp(part.precisionReq + (client.tier - 1) * 3, 45, 96);
-    const deadlineSec = 240 + client.tier * 90; // 4 à 11.5 minutes de temps de jeu
-    const unitReward = part.baseValue * (1.42 + client.tier * 0.14);
-    const baseReward = Math.round(qty * unitReward);
-    const rewardRP = Math.round(18 + client.tier * 22 + part.difficulty * 8);
-
-    return {
-      id: `ctr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      clientName: client.name,
-      clientBadge: client.badge,
-      tier: client.tier,
-      partId: part.id,
-      materialId: part.materialId,
-      quantity: qty,
-      minQuality,
-      minPrecision,
-      reqCert: client.reqCert || null,
-      minRep: client.minRep,
-      deadlineSec,
-      remainingSec: deadlineSec,
-      baseReward,
-      agreedReward: baseReward,
-      rewardRP,
-      bidType: 'standard',
-      status: 'available', // 'available' | 'accepted' | 'completed' | 'expired'
-      createdAt: Date.now()
-    };
-  },
-
-  /** Migration versionnée v1 -> v2 : ne perd aucune donnée joueur existante */
-  migrateSaveData(raw) {
-    if (!raw || typeof raw !== 'object') return null;
-
-    // Déjà en version 2 : on assainit simplement les champs manquants sans re-migrer
-    if (raw.saveVersion >= SAVE_VERSION) {
-      const slots = Array(16).fill(null);
-      if (Array.isArray(raw.slots)) {
-        for (let i = 0; i < Math.min(16, raw.slots.length); i++) {
-          slots[i] = raw.slots[i] ? {
-            machineId: raw.slots[i].machineId,
-            employeeId: raw.slots[i].employeeId || null,
-            partId: raw.slots[i].partId || null,
-            cycleProgress: Number(raw.slots[i].cycleProgress) || 0,
-            paused: Boolean(raw.slots[i].paused)
-          } : null;
-        }
-      }
-      return {
-        ...raw,
-        saveVersion: SAVE_VERSION,
-        money: Math.max(0, Number(raw.money) || 0),
-        researchPoints: Math.max(0, Number(raw.researchPoints) || 0),
-        materials: { alu: 0, steel: 0, plastic: 0, inox: 0, copper: 0, titanium: 0, ...(raw.materials || {}) },
-        finishedLots: Array.isArray(raw.finishedLots) ? raw.finishedLots : [],
-        slots,
-        metrology: Array.isArray(raw.metrology) ? raw.metrology : [],
-        support: Array.isArray(raw.support) ? raw.support : [],
-        unlockedTechs: Array.isArray(raw.unlockedTechs) ? raw.unlockedTechs : [],
-        autoSellRules: raw.autoSellRules || {},
-        autoRestock: raw.autoRestock || {},
-        contracts: Array.isArray(raw.contracts) ? raw.contracts : [],
-        claimedMissions: Array.isArray(raw.claimedMissions) ? raw.claimedMissions : [],
-        inventory: Array.isArray(raw.inventory) ? raw.inventory : [],
-        atelier: { sizeLevel: 1, floor: 'beton', ...(raw.atelier || {}) },
-        reputation: { quality: 20, reliability: 20, innovation: 15, capacity: 15, delivery: 20, ...(raw.reputation || {}) },
-        stats: {
-          totalPartsProduced: 0, totalRevenue: 0, totalProfit: 0,
-          totalInspected: 0, highQualityParts: 0, contractsCompleted: 0,
-          contractsFailed: 0, ...(raw.stats || {})
-        },
-        lastActiveAt: Number(raw.lastActiveAt || raw.updatedAt) || Date.now(),
-        wasMigrated: false
-      };
-    }
-
-    // MIGRATION V1 -> V2 : Préservation de l'argent, des machines, des cartes et compensation juste
-    const legacyMoney = Math.max(1200, Number(raw.money) || 0);
-    const legacyClickLevel = Math.max(1, Number(raw.clickLevel) || 1);
-    const legacyAtelier = raw.atelier || { sizeLevel: 1, floor: 'beton', crane: false, agv: false };
-
-    const migratedSupport = [];
-    if (legacyAtelier.crane) migratedSupport.push('crane');
-    if (legacyAtelier.agv) migratedSupport.push('agv');
-
-    const migratedTechs = new Set();
-    const migratedSlots = Array(16).fill(null);
-
-    if (Array.isArray(raw.slots)) {
-      raw.slots.forEach((s, i) => {
-        if (i < 16 && s && s.machineId && MACHINES_CATALOG.some(m => m.id === s.machineId)) {
-          const mac = MACHINES_CATALOG.find(m => m.id === s.machineId);
-          // Débloque la techno correspondante si le joueur possédait déjà la machine en v1
-          if (mac.reqTech) migratedTechs.add(mac.reqTech);
-          const defaultPart = PARTS_CATALOG.find(p => p.compatibleMachines.includes(mac.id))?.id || 'spacer';
-          migratedSlots[i] = {
-            machineId: mac.id,
-            employeeId: s.employeeId || null,
-            partId: defaultPart,
-            cycleProgress: 0,
-            paused: false
-          };
-        }
-      });
-    }
-
-    // Compensation équitable en Points de Recherche & Matières pour l'ancien niveau de clic
-    const compensationRP = 20 + (legacyClickLevel - 1) * 15;
-
-    return {
-      saveVersion: SAVE_VERSION,
-      migratedFromV1: true,
-      wasMigrated: true,
-      pseudo: raw.pseudo || '',
-      password: raw.password || '',
-      money: legacyMoney,
-      researchPoints: compensationRP,
-      materials: { alu: 40, steel: 25, plastic: 0, inox: 0, copper: 0, titanium: 0 },
-      finishedLots: [],
-      slots: migratedSlots,
-      metrology: [],
-      support: migratedSupport,
-      unlockedTechs: Array.from(migratedTechs),
-      autoSellRules: {},
-      autoRestock: {},
-      contracts: [],
-      claimedMissions: [],
-      inventory: Array.isArray(raw.inventory) ? raw.inventory : [],
-      atelier: { sizeLevel: legacyAtelier.sizeLevel || 1, floor: legacyAtelier.floor || 'beton' },
-      reputation: { quality: 25, reliability: 25, innovation: 20, capacity: 25, delivery: 25 },
-      stats: {
-        totalPartsProduced: 0, totalRevenue: 0, totalProfit: 0,
-        totalInspected: 0, highQualityParts: 0, contractsCompleted: 0, contractsFailed: 0
-      },
-      lastActiveAt: Date.now()
-    };
-  }
-};
-
-// ============================================================================
-// MODULE 8 : COMPOSANTS D'ILLUSTRATION SVG (MACHINES, PORTRAITS 5x2 & CARTES)
-// ============================================================================
-const MachineIllustration = ({ id, animated = true, className = "w-full h-full" }) => {
-  switch (id) {
-    case 'drill_saw':
-      return (
-        <svg viewBox="0 0 120 90" className={className}>
-          <rect x="12" y="64" width="96" height="16" rx="3" fill="#1e293b" stroke="#64748b" strokeWidth="2" />
-          <path d="M 22 64 L 22 24 Q 22 16 32 16 L 52 16 Q 58 16 58 24 L 58 34 L 34 34 L 34 52 L 58 52 L 58 64 Z" fill="#475569" stroke="#cbd5e1" strokeWidth="1.5" />
-          <line x1="48" y1="34" x2="48" y2="56" stroke="#fbbf24" strokeWidth="2.5" strokeDasharray="3 2" className={animated ? "animate-pulse" : ""} />
-          <rect x="38" y="48" width="18" height="6" rx="1" fill="#38bdf8" />
-          <rect x="84" y="14" width="7" height="50" fill="#64748b" />
-          <rect x="70" y="14" width="26" height="16" rx="3" fill="#0284c7" stroke="#7dd3fc" strokeWidth="1.5" />
-          <g className={animated ? "animate-tool-head" : ""}>
-            <rect x="76" y="30" width="8" height="7" fill="#334155" />
-            <path d="M 78 37 L 82 37 L 80 54 Z" fill="#f59e0b" />
-          </g>
-          <rect x="70" y="54" width="20" height="4" rx="1" fill="#94a3b8" />
-        </svg>
-      );
-    case 'lathe_conv':
-      return (
-        <svg viewBox="0 0 120 90" className={className}>
-          <rect x="10" y="56" width="100" height="24" rx="3" fill="#064e3b" stroke="#10b981" strokeWidth="2" />
-          <rect x="16" y="46" width="88" height="10" fill="#1e293b" stroke="#64748b" strokeWidth="1" />
-          <rect x="10" y="22" width="28" height="34" rx="2" fill="#047857" stroke="#34d399" strokeWidth="1.5" />
-          <circle cx="24" cy="36" r="7" fill="#0f172a" stroke="#6ee7b7" strokeWidth="1.5" />
-          <rect x="38" y="28" width="8" height="20" rx="1" fill="#94a3b8" />
-          <rect x="46" y="34" width="44" height="8" fill="#cbd5e1" />
-          <rect x="46" y="35" width="26" height="6" fill="#38bdf8" />
-          <path d="M 90 38 L 98 33 L 108 33 L 108 46 L 98 46 Z" fill="#047857" stroke="#34d399" strokeWidth="1.5" />
-          <g className={animated ? "animate-carriage" : ""}>
-            <rect x="58" y="42" width="16" height="18" rx="2" fill="#334155" stroke="#e2e8f0" strokeWidth="1.5" />
-            <path d="M 64 42 L 66 37 L 69 42 Z" fill="#fbbf24" />
-          </g>
-        </svg>
-      );
-    case 'mill_3axis':
-      return (
-        <svg viewBox="0 0 120 90" className={className}>
-          <rect x="12" y="10" width="96" height="70" rx="5" fill="#1e3a8a" stroke="#60a5fa" strokeWidth="2" />
-          <rect x="22" y="18" width="58" height="44" rx="3" fill="#090d16" stroke="#38bdf8" strokeWidth="1.5" />
-          <rect x="28" y="52" width="46" height="6" rx="1" fill="#64748b" />
-          <rect x="38" y="45" width="26" height="7" rx="1" fill="#38bdf8" />
-          <g className={animated ? "animate-tool-head" : ""}>
-            <rect x="44" y="20" width="14" height="16" rx="2" fill="#e2e8f0" stroke="#3b82f6" strokeWidth="1.5" />
-            <path d="M 49 42 L 53 42 L 52 47 L 50 47 Z" fill="#fbbf24" />
-          </g>
-          <rect x="85" y="22" width="18" height="40" rx="2" fill="#0f172a" stroke="#94a3b8" strokeWidth="1.5" />
-          <rect x="88" y="26" width="12" height="10" rx="1" fill="#0284c7" />
-        </svg>
-      );
-    case 'lathe_sub':
-      return (
-        <svg viewBox="0 0 120 90" className={className}>
-          <path d="M 10 76 L 16 14 L 104 14 L 110 76 Z" fill="#312e81" stroke="#818cf8" strokeWidth="2" />
-          <polygon points="24,22 80,22 76,58 20,58" fill="#090d16" stroke="#6366f1" strokeWidth="1.5" />
-          <rect x="21" y="34" width="12" height="14" fill="#94a3b8" />
-          <rect x="63" y="35" width="10" height="12" fill="#94a3b8" />
-          <rect x="33" y="38" width="30" height="6" fill="#38bdf8" />
-          <g className={animated ? "animate-carriage" : ""}>
-            <polygon points="44,23 54,23 57,31 49,37 41,31" fill="#e2e8f0" stroke="#4f46e5" strokeWidth="1.5" />
-            <rect x="48" y="35" width="2" height="4" fill="#fbbf24" />
-          </g>
-          <rect x="84" y="24" width="18" height="36" rx="2" fill="#0f172a" stroke="#a5b4fc" strokeWidth="1.5" />
-        </svg>
-      );
-    case 'mill_5axis':
-      return (
-        <svg viewBox="0 0 120 90" className={className}>
-          <rect x="10" y="8" width="100" height="74" rx="7" fill="#3b0764" stroke="#c084fc" strokeWidth="2" />
-          <rect x="20" y="16" width="64" height="54" rx="6" fill="#090d16" stroke="#a855f7" strokeWidth="1.5" />
-          <g className={animated ? "origin-[52px_52px] animate-cradle" : ""}>
-            <path d="M 32 46 A 20 14 0 0 0 72 46" fill="none" stroke="#94a3b8" strokeWidth="5" />
-            <path d="M 45 48 L 49 38 L 55 38 L 59 48 Z" fill="#38bdf8" />
-          </g>
-          <g className={animated ? "animate-tool-head" : ""}>
-            <path d="M 46 16 L 58 16 L 55 32 L 49 32 Z" fill="#f8fafc" stroke="#c084fc" strokeWidth="1.5" />
-            <line x1="52" y1="32" x2="52" y2="40" stroke="#f43f5e" strokeWidth="2" />
-          </g>
-          <rect x="88" y="20" width="16" height="44" rx="3" fill="#0f172a" stroke="#d8b4fe" strokeWidth="1.5" />
-        </svg>
-      );
-    case 'edm_wire':
-      return (
-        <svg viewBox="0 0 120 90" className={className}>
-          <rect x="12" y="10" width="96" height="70" rx="5" fill="#451a03" stroke="#f59e0b" strokeWidth="2" />
-          <rect x="22" y="36" width="60" height="34" rx="3" fill="#083344" stroke="#22d3ee" strokeWidth="2" />
-          <rect x="24" y="42" width="56" height="26" rx="2" fill="#06b6d4" opacity="0.35" />
-          <rect x="36" y="50" width="32" height="10" rx="1" fill="#94a3b8" />
-          <line x1="52" y1="24" x2="52" y2="68" stroke="#fde047" strokeWidth="1.5" />
-          {animated && <circle cx="52" cy="55" r="4" fill="#22d3ee" className="animate-ping" />}
-          <rect x="86" y="20" width="16" height="50" rx="2" fill="#0f172a" stroke="#fbbf24" strokeWidth="1.5" />
-        </svg>
-      );
-    default:
-      return (
-        <svg viewBox="0 0 120 90" className={className}>
-          <rect x="8" y="8" width="104" height="74" rx="6" fill="#4c0519" stroke="#fb7185" strokeWidth="2" />
-          <rect x="16" y="18" width="34" height="48" rx="3" fill="#090d16" stroke="#f43f5e" strokeWidth="1.5" />
-          <rect x="70" y="18" width="34" height="48" rx="3" fill="#090d16" stroke="#f43f5e" strokeWidth="1.5" />
-          <g className={animated ? "origin-[60px_64px] animate-robot-arm" : ""}>
-            <circle cx="60" cy="62" r="6" fill="#f97316" />
-            <line x1="60" y1="62" x2="48" y2="38" stroke="#f97316" strokeWidth="6" strokeLinecap="round" />
-            <line x1="48" y1="38" x2="66" y2="28" stroke="#fb923c" strokeWidth="4.5" strokeLinecap="round" />
-          </g>
-        </svg>
-      );
-  }
-};
-
-const CharacterPortrait = ({ id, spriteSheetUrl, className = "w-full h-full" }) => {
-  const spritePos = AVATAR_SPRITE_POSITIONS[id];
-  if (spritePos && spriteSheetUrl) {
-    return (
-      <div
-        className={`${className} relative overflow-hidden select-none`}
-        style={{
-          backgroundColor: '#f8fafc',
-          backgroundImage: `url("${spriteSheetUrl}")`,
-          backgroundSize: '500% 200%',
-          backgroundPosition: `${spritePos.x} ${spritePos.y}`,
-          backgroundRepeat: 'no-repeat'
-        }}
-      />
-    );
-  }
-  const palette = {
-    emp_mst: ['#881337', '#e11d48'], emp_marty: ['#78350f', '#d97706'], emp_blanchard: ['#1e3a8a', '#2563eb'],
-    emp_graya: ['#7c2d12', '#ea580c'], emp_renaud: ['#4c1d95', '#7c3aed'], emp_pietri: ['#312e81', '#4f46e5'],
-    emp_pompidou: ['#0c4a6e', '#0284c7'], emp_lauris: ['#064e3b', '#059669'], emp_pierre: ['#1e293b', '#475569'],
-    emp_sebastien: ['#164e63', '#0891b2'], emp_cedric: ['#334155', '#64748b'], emp_elliot: ['#1e293b', '#3b82f6']
+function generateContractOffer(reputation, unlockedTechs) {
+  const availableParts = PARTS_CATALOG.filter(p => !p.reqTech || unlockedTechs.includes(p.reqTech));
+  const part = availableParts[Math.floor(Math.random() * availableParts.length)] || PARTS_CATALOG[0];
+  const tier = reputation >= 60 ? 3 : reputation >= 25 ? 2 : 1;
+  const qty = tier === 1 ? 8 + Math.floor(Math.random() * 10) : tier === 2 ? 18 + Math.floor(Math.random() * 18) : 35 + Math.floor(Math.random() * 30);
+  const minQuality = tier === 1 ? 72 : tier === 2 ? 84 : 92;
+  const clients = ['Airbus Atlantic', 'Safran Landing', 'Dassault Systèmes', 'Alstom Transport', 'ArianeGroup', 'Michelin Outillage', 'Thales Avionics'];
+  const client = clients[Math.floor(Math.random() * clients.length)];
+  const baseReward = Math.round(part.sellPrice * qty * (1.28 + tier * 0.14));
+  const rpReward = tier * 12 + Math.floor(qty / 4);
+  return {
+    id: `ctr_${Date.now()}_${Math.floor(Math.random() * 9999)}`,
+    client,
+    tier,
+    partId: part.id,
+    qty,
+    minQuality,
+    baseReward,
+    rpReward,
+    bidMult: 1.0
   };
-  const [bg, suit] = palette[id] || ['#334155', '#475569'];
+}
+
+// ============================================================================
+// 4. COMPOSANTS GRAPHIQUES SVG (BROCHE ROTATIVE, PIÈCES, MACHINES, PORTRAITS)
+// ============================================================================
+const ManualSpindleSVG = ({ rpm, sparks }) => (
+  <svg viewBox="0 0 140 140" className="w-28 h-28 mx-auto select-none">
+    <defs>
+      <radialGradient id="spindleGlow" cx="50%" cy="50%" r="50%">
+        <stop offset="0%" stopColor="#38bdf8" stopOpacity={rpm > 0 ? 0.35 : 0.08} />
+        <stop offset="100%" stopColor="#0f172a" stopOpacity="0" />
+      </radialGradient>
+    </defs>
+    <circle cx="70" cy="70" r="64" fill="url(#spindleGlow)" stroke="#1e293b" strokeWidth="2" />
+    <circle
+      cx="70"
+      cy="70"
+      r="56"
+      fill="none"
+      stroke="#38bdf8"
+      strokeWidth="3"
+      strokeDasharray="352"
+      strokeDashoffset={352 - Math.min(352, (rpm / 6000) * 352)}
+      strokeLinecap="round"
+      transform="rotate(-90 70 70)"
+    />
+    {/* Corps de broche */}
+    <rect x="48" y="16" width="44" height="26" rx="4" fill="#334155" stroke="#64748b" strokeWidth="1.5" />
+    <rect x="54" y="42" width="32" height="14" rx="2" fill="#475569" stroke="#94a3b8" strokeWidth="1.5" />
+    {/* Fraise hélicoïdale animée */}
+    <g style={{ transformOrigin: '70px 76px', animation: rpm > 100 ? `spin ${Math.max(0.12, 1.2 - rpm / 6000)}s linear infinite` : 'none' }}>
+      <rect x="64" y="56" width="12" height="38" rx="2" fill="#cbd5e1" stroke="#38bdf8" strokeWidth="1.2" />
+      <line x1="64" y1="64" x2="76" y2="70" stroke="#0284c7" strokeWidth="2" />
+      <line x1="64" y1="74" x2="76" y2="80" stroke="#0284c7" strokeWidth="2" />
+      <line x1="64" y1="84" x2="76" y2="90" stroke="#0284c7" strokeWidth="2" />
+    </g>
+    {/* Brut usiné */}
+    <rect x="34" y="96" width="72" height="18" rx="3" fill="#1e293b" stroke="#38bdf8" strokeWidth="1.5" />
+    {sparks && (
+      <g fill="#facc15">
+        <circle cx="54" cy="92" r="2.2" />
+        <circle cx="86" cy="90" r="2.5" />
+        <circle cx="46" cy="85" r="1.8" />
+        <circle cx="93" cy="83" r="1.8" />
+      </g>
+    )}
+  </svg>
+);
+
+const PartIllustration = ({ partId, sizeClass = 'w-10 h-10' }) => (
+  <svg viewBox="0 0 48 48" className={`${sizeClass} shrink-0`}>
+    <rect x="2" y="2" width="44" height="44" rx="10" fill="#09111e" stroke="#1e293b" strokeWidth="1.5" />
+    {partId === 'spacer_alu' && (
+      <g stroke="#38bdf8" strokeWidth="2" fill="#38bdf8" fillOpacity="0.18">
+        <ellipse cx="24" cy="15" rx="11" ry="4.5" />
+        <path d="M13 15 V33 A11 4.5 0 0 0 35 33 V15" />
+        <ellipse cx="24" cy="15" rx="4.5" ry="2" fill="#09111e" />
+      </g>
+    )}
+    {partId === 'shaft_steel' && (
+      <g stroke="#cbd5e1" strokeWidth="1.8" fill="#64748b" fillOpacity="0.35">
+        <rect x="8" y="20" width="8" height="8" rx="1" />
+        <rect x="16" y="15" width="16" height="18" rx="1.5" />
+        <rect x="32" y="20" width="8" height="8" rx="1" />
+      </g>
+    )}
+    {partId === 'bushing_brass' && (
+      <g stroke="#fbbf24" strokeWidth="2" fill="#fbbf24" fillOpacity="0.22">
+        <circle cx="24" cy="24" r="13" />
+        <circle cx="24" cy="24" r="6" fill="#09111e" />
+      </g>
+    )}
+    {partId === 'bracket_cnc' && (
+      <g stroke="#94a3b8" strokeWidth="2" fill="#94a3b8" fillOpacity="0.22">
+        <path d="M13 11 H21 V27 H37 V35 H13 Z" />
+        <circle cx="17" cy="16" r="1.5" fill="#38bdf8" />
+        <circle cx="31" cy="31" r="1.5" fill="#38bdf8" />
+      </g>
+    )}
+    {partId === 'insulator_peek' && (
+      <g stroke="#f59e0b" strokeWidth="2" fill="#d97706" fillOpacity="0.25">
+        <rect x="14" y="12" width="20" height="5" rx="1" />
+        <rect x="17" y="17" width="14" height="5" rx="1" />
+        <rect x="14" y="22" width="20" height="5" rx="1" />
+        <rect x="17" y="27" width="14" height="6" rx="1" />
+      </g>
+    )}
+    {partId === 'gear_helical' && (
+      <g stroke="#38bdf8" strokeWidth="1.8" fill="#0284c7" fillOpacity="0.25">
+        <circle cx="24" cy="24" r="11" />
+        <circle cx="24" cy="24" r="4" fill="#09111e" />
+        <line x1="24" y1="9" x2="24" y2="13" strokeWidth="2.5" />
+        <line x1="24" y1="35" x2="24" y2="39" strokeWidth="2.5" />
+        <line x1="9" y1="24" x2="13" y2="24" strokeWidth="2.5" />
+        <line x1="35" y1="24" x2="39" y2="24" strokeWidth="2.5" />
+      </g>
+    )}
+    {partId === 'housing_ti' && (
+      <g stroke="#a78bfa" strokeWidth="2" fill="#8b5cf6" fillOpacity="0.22">
+        <polygon points="24,10 36,17 36,31 24,38 12,31 12,17" />
+        <circle cx="24" cy="24" r="5" fill="#09111e" />
+      </g>
+    )}
+    {partId === 'nozzle_slm' && (
+      <g stroke="#f97316" strokeWidth="2" fill="#ea580c" fillOpacity="0.25">
+        <path d="M18 10 H30 L27 19 L35 36 H13 L21 19 Z" />
+      </g>
+    )}
+  </svg>
+);
+
+const MachineIllustration = ({ machineId, active }) => (
+  <svg viewBox="0 0 64 48" className="w-14 h-11 shrink-0">
+    <rect x="4" y="38" width="56" height="6" rx="2" fill="#1e293b" stroke="#475569" strokeWidth="1.2" />
+    {machineId === 'drill_saw' && (
+      <g>
+        <rect x="28" y="8" width="6" height="30" fill="#64748b" />
+        <rect x="20" y="6" width="22" height="8" rx="2" fill="#0284c7" />
+        <line x1="31" y1="14" x2="31" y2="28" stroke="#e2e8f0" strokeWidth="2" />
+      </g>
+    )}
+    {machineId === 'manual_lathe' && (
+      <g>
+        <rect x="8" y="16" width="16" height="22" rx="2" fill="#0369a1" />
+        <rect x="24" y="22" width="10" height="10" fill="#cbd5e1" />
+        <rect x="44" y="20" width="12" height="18" rx="2" fill="#475569" />
+      </g>
+    )}
+    {machineId === 'cnc_mill_3x' && (
+      <g>
+        <rect x="10" y="6" width="44" height="32" rx="3" fill="#0f172a" stroke="#38bdf8" strokeWidth="1.6" />
+        <rect x="16" y="12" width="22" height="18" rx="1.5" fill="#0284c7" fillOpacity="0.25" />
+        <rect x="42" y="12" width="8" height="12" rx="1" fill="#22c55e" fillOpacity="0.5" />
+      </g>
+    )}
+    {machineId === 'bi_spindle' && (
+      <g>
+        <rect x="8" y="8" width="48" height="30" rx="3" fill="#0f172a" stroke="#a855f7" strokeWidth="1.6" />
+        <rect x="13" y="17" width="11" height="12" fill="#c084fc" />
+        <rect x="40" y="17" width="11" height="12" fill="#c084fc" />
+        <line x1="24" y1="23" x2="40" y2="23" stroke="#facc15" strokeWidth="2" strokeDasharray="2 2" />
+      </g>
+    )}
+    {machineId === 'cnc_5axis' && (
+      <g>
+        <rect x="8" y="5" width="48" height="33" rx="4" fill="#0f172a" stroke="#f59e0b" strokeWidth="1.8" />
+        <path d="M20 26 A12 12 0 0 0 44 26" fill="none" stroke="#fbbf24" strokeWidth="2.2" />
+        <line x1="32" y1="9" x2="32" y2="22" stroke="#38bdf8" strokeWidth="2.5" />
+      </g>
+    )}
+    {machineId === 'edm_cell' && (
+      <g>
+        <rect x="10" y="6" width="44" height="32" rx="3" fill="#091526" stroke="#10b981" strokeWidth="1.8" />
+        <polygon points="33,10 25,23 32,23 30,34 39,20 32,20" fill="#34d399" />
+      </g>
+    )}
+    {machineId === 'slm_laser' && (
+      <g>
+        <rect x="8" y="4" width="48" height="34" rx="4" fill="#180c08" stroke="#f97316" strokeWidth="2" />
+        <line x1="32" y1="8" x2="32" y2="28" stroke="#fb923c" strokeWidth="2.5" />
+        <polygon points="20,34 32,25 44,34" fill="#f97316" fillOpacity="0.6" />
+      </g>
+    )}
+    {active && <circle cx="56" cy="10" r="3" fill="#22c55e" />}
+  </svg>
+);
+
+const CharacterPortrait = ({ emp, sizeClass = 'w-12 h-12' }) => {
+  const [imgError, setImgError] = useState(false);
+  if (!emp) return null;
+  const rar = RARITY_CONFIG[emp.rarity] || RARITY_CONFIG.commun;
+
   return (
-    <svg viewBox="0 0 100 100" className={className}>
-      <rect width="100" height="100" rx="14" fill={bg} />
-      <path d="M 18 96 Q 20 66 50 66 Q 80 66 82 96 Z" fill={suit} stroke="#fff" strokeOpacity="0.3" strokeWidth="1.5" />
-      <circle cx="50" cy="42" r="18" fill="#fed7aa" />
-      <circle cx="43" cy="41" r="2.2" fill="#0f172a" />
-      <circle cx="57" cy="41" r="2.2" fill="#0f172a" />
-      <path d="M 44 49 Q 50 53 56 49" fill="none" stroke="#0f172a" strokeWidth="2" strokeLinecap="round" />
-      <path d="M 30 35 Q 50 15 70 35 Z" fill="#fbbf24" />
+    <div
+      className={`${sizeClass} rounded-xl overflow-hidden border-2 shrink-0 flex items-center justify-center bg-slate-900 relative`}
+      style={{ borderColor: rar.hex }}
+    >
+      {!imgError ? (
+        <img
+          src={`./avatars/${emp.id}.png`}
+          alt={emp.name}
+          onError={() => setImgError(true)}
+          className="w-full h-full object-cover"
+        />
+      ) : (
+        <svg viewBox="0 0 64 64" className="w-full h-full">
+          <rect width="64" height="64" fill="#0f172a" />
+          <circle cx="32" cy="32" r="28" fill={rar.hex} fillOpacity="0.16" />
+          {/* Buste */}
+          <path d="M14 62 C14 47, 50 47, 50 62" fill={emp.shirt || '#334155'} />
+          {/* Visage */}
+          <circle cx="32" cy="29" r="13" fill={emp.skin || '#f1c27d'} />
+          {/* Cheveux */}
+          <path d="M19 27 C19 14, 45 14, 45 27 C42 20, 22 20, 19 27 Z" fill={emp.hair || '#1e293b'} />
+          {/* Yeux */}
+          <circle cx="27" cy="29" r="1.7" fill="#0f172a" />
+          <circle cx="37" cy="29" r="1.7" fill="#0f172a" />
+          {emp.glasses && (
+            <g stroke="#e2e8f0" strokeWidth="1.4" fill="none">
+              <rect x="22" y="25.5" width="9" height="6.5" rx="1.5" />
+              <rect x="33" y="25.5" width="9" height="6.5" rx="1.5" />
+              <line x1="31" y1="28.5" x2="33" y2="28.5" />
+            </g>
+          )}
+          {/* Sourire ou moue malus */}
+          {emp.rarity === 'malus' ? (
+            <path d="M27 36 Q32 32 37 36" stroke="#7f1d1d" strokeWidth="1.8" fill="none" strokeLinecap="round" />
+          ) : (
+            <path d="M27 34 Q32 38 37 34" stroke="#78350f" strokeWidth="1.8" fill="none" strokeLinecap="round" />
+          )}
+        </svg>
+      )}
+    </div>
+  );
+};
+
+const SupplyCrateSVG = ({ isOpening, rarityColor = '#38bdf8' }) => (
+  <svg
+    viewBox="0 0 120 96"
+    className={`w-28 h-22 transition-transform ${isOpening ? 'animate-bounce scale-105' : ''}`}
+  >
+    <defs>
+      <radialGradient id="crateBeam" cx="50%" cy="60%" r="50%">
+        <stop offset="0%" stopColor={rarityColor} stopOpacity={isOpening ? 0.75 : 0.22} />
+        <stop offset="100%" stopColor={rarityColor} stopOpacity="0" />
+      </radialGradient>
+    </defs>
+    <ellipse cx="60" cy="52" rx="52" ry="38" fill="url(#crateBeam)" />
+    {/* Corps caisse */}
+    <rect x="24" y="38" width="72" height="44" rx="6" fill="#1e293b" stroke={rarityColor} strokeWidth="2.5" />
+    <line x1="24" y1="54" x2="96" y2="54" stroke="#475569" strokeWidth="2" />
+    <line x1="48" y1="38" x2="48" y2="82" stroke="#334155" strokeWidth="2" />
+    <line x1="72" y1="38" x2="72" y2="82" stroke="#334155" strokeWidth="2" />
+    {/* Couvercle */}
+    <g transform={isOpening ? 'translate(0, -10) rotate(-6 60 34)' : ''}>
+      <rect x="20" y="26" width="80" height="14" rx="4" fill="#334155" stroke={rarityColor} strokeWidth="2.5" />
+      <rect x="52" y="30" width="16" height="10" rx="2" fill={rarityColor} />
+    </g>
+  </svg>
+);
+
+const TechNodeGlyph = ({ node, unlocked, available }) => {
+  const c = unlocked ? '#38bdf8' : available ? '#facc15' : '#64748b';
+  return (
+    <svg viewBox="0 0 36 36" className="w-9 h-9">
+      {node.id === 'prod_conv' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <rect x="10" y="9" width="16" height="5" rx="1" />
+          <line x1="18" y1="14" x2="18" y2="23" />
+          <line x1="11" y1="27" x2="25" y2="27" strokeWidth="2.5" />
+        </g>
+      )}
+      {node.id === 'prod_cnc3' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <rect x="8" y="8" width="20" height="20" rx="3" />
+          <path d="M13 23 L13 13 L23 13" />
+          <circle cx="20" cy="20" r="2.5" fill={c} />
+        </g>
+      )}
+      {node.id === 'prod_bi' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <rect x="6" y="13" width="7" height="10" rx="1" />
+          <rect x="23" y="13" width="7" height="10" rx="1" />
+          <line x1="13" y1="18" x2="23" y2="18" strokeDasharray="2 2" />
+        </g>
+      )}
+      {node.id === 'prod_5axis' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <path d="M9 22 A9 9 0 0 0 27 22" />
+          <line x1="18" y1="8" x2="18" y2="19" />
+          <circle cx="18" cy="22" r="3" fill={c} />
+        </g>
+      )}
+      {node.id === 'prod_edm' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <polygon points="19,7 12,19 18,19 16,29 24,17 18,17" fill={c} fillOpacity="0.25" />
+        </g>
+      )}
+      {node.id === 'prod_slm' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <line x1="18" y1="7" x2="18" y2="20" stroke="#f97316" strokeWidth="2.5" />
+          <polygon points="11,26 18,20 25,26" fill={c} fillOpacity="0.3" />
+          <line x1="8" y1="28" x2="28" y2="28" />
+        </g>
+      )}
+      {node.id === 'met_manual' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <line x1="9" y1="14" x2="27" y2="14" />
+          <line x1="12" y1="14" x2="12" y2="24" />
+          <line x1="19" y1="14" x2="19" y2="22" />
+        </g>
+      )}
+      {node.id === 'met_col2d' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <line x1="18" y1="8" x2="18" y2="27" />
+          <line x1="11" y1="27" x2="25" y2="27" strokeWidth="2.5" />
+          <path d="M18 15 L25 15" />
+        </g>
+      )}
+      {node.id === 'met_cmm' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <path d="M9 26 V11 H27 V26" />
+          <line x1="18" y1="11" x2="18" y2="20" />
+          <circle cx="18" cy="21" r="2" fill="#ef4444" stroke="none" />
+        </g>
+      )}
+      {node.id === 'met_scanner' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <rect x="11" y="8" width="14" height="5" rx="1" />
+          <polygon points="13,13 23,13 27,27 9,27" fill={c} fillOpacity="0.18" />
+        </g>
+      )}
+      {node.id === 'qual_basic' && (
+        <g stroke={c} strokeWidth="2.2" fill="none">
+          <circle cx="18" cy="18" r="9" />
+          <path d="M13 18 L16.5 21.5 L23.5 14.5" />
+        </g>
+      )}
+      {node.id === 'qual_spc' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <line x1="8" y1="18" x2="28" y2="18" strokeDasharray="2 2" />
+          <polyline points="8,22 13,13 18,21 23,12 28,17" />
+        </g>
+      )}
+      {node.id === 'qual_iso' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <path d="M18 8 L26 12 V19 C26 24 18 28 18 28 C18 28 10 24 10 19 V12 Z" fill={c} fillOpacity="0.2" />
+          <path d="M14 18 L17 21 L22 15" />
+        </g>
+      )}
+      {node.id === 'meth_std' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <rect x="10" y="8" width="16" height="20" rx="2" />
+          <line x1="13" y1="14" x2="23" y2="14" />
+          <line x1="13" y1="19" x2="23" y2="19" />
+          <line x1="13" y1="24" x2="19" y2="24" />
+        </g>
+      )}
+      {node.id === 'meth_smed' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <circle cx="18" cy="19" r="8" />
+          <line x1="18" y1="19" x2="18" y2="14" />
+          <line x1="18" y1="19" x2="22" y2="19" />
+          <line x1="15" y1="8" x2="21" y2="8" />
+        </g>
+      )}
+      {node.id === 'meth_lean' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <path d="M10 14 H25 L21 10" />
+          <path d="M26 22 H11 L15 26" />
+        </g>
+      )}
+      {node.id === 'auto_manual' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <rect x="11" y="13" width="14" height="12" rx="2" />
+          <path d="M14 13 V10 H22 V13" />
+        </g>
+      )}
+      {node.id === 'auto_conv' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <rect x="8" y="19" width="20" height="6" rx="3" />
+          <circle cx="12" cy="22" r="1.2" fill={c} />
+          <circle cx="18" cy="22" r="1.2" fill={c} />
+          <circle cx="24" cy="22" r="1.2" fill={c} />
+          <rect x="13" y="12" width="10" height="6" rx="1" />
+        </g>
+      )}
+      {node.id === 'auto_robot' && (
+        <g stroke={c} strokeWidth="2.2" fill="none">
+          <line x1="10" y1="27" x2="22" y2="27" />
+          <polyline points="15,27 12,18 21,11 26,15" />
+          <circle cx="12" cy="18" r="2" fill={c} />
+          <circle cx="21" cy="11" r="2" fill={c} />
+        </g>
+      )}
+      {node.id === 'mat_base' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <polygon points="10,23 14,14 22,14 26,23" fill={c} fillOpacity="0.2" />
+        </g>
+      )}
+      {node.id === 'mat_inox' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <circle cx="18" cy="18" r="8" />
+          <circle cx="18" cy="18" r="3.5" />
+        </g>
+      )}
+      {node.id === 'mat_peek' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <circle cx="14" cy="15" r="3" />
+          <circle cx="23" cy="15" r="3" />
+          <circle cx="18" cy="23" r="3" />
+          <line x1="16" y1="16" x2="21" y2="16" />
+          <line x1="15" y1="18" x2="17" y2="21" />
+          <line x1="21" y1="18" x2="19" y2="21" />
+        </g>
+      )}
+      {node.id === 'mat_titanium' && (
+        <g stroke={c} strokeWidth="2.2" fill="none">
+          <polygon points="18,8 27,13 27,23 18,28 9,23 9,13" />
+          <line x1="18" y1="8" x2="18" y2="28" />
+        </g>
+      )}
+      {node.id === 'rh_base' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <circle cx="18" cy="13" r="4" />
+          <path d="M10 27 C10 21, 26 21, 26 27" />
+        </g>
+      )}
+      {node.id === 'rh_headhunt' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <circle cx="15" cy="14" r="4" />
+          <path d="M8 27 C8 21, 22 21, 22 27" />
+          <circle cx="24" cy="15" r="3" />
+          <line x1="26" y1="17" x2="29" y2="20" />
+        </g>
+      )}
+      {node.id === 'rh_exec' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <polygon points="10,13 14,17 18,11 22,17 26,13 24,25 12,25" fill={c} fillOpacity="0.25" />
+        </g>
+      )}
+      {node.id === 'rh_academy' && (
+        <g stroke={c} strokeWidth="2" fill="none">
+          <polygon points="18,9 29,14 18,19 7,14" fill={c} fillOpacity="0.25" />
+          <path d="M11 17 V23 C11 25, 25 25, 25 23 V17" />
+        </g>
+      )}
     </svg>
   );
 };
 
-const EmployeeCard = ({ employee, count = 1, onMerge, spriteSheetUrl }) => {
-  const meta = RARITY_META[employee.rarity] || RARITY_META.COMMON;
-  const stars = employee.stars || 1;
-  const starScale = 1 + (stars - 1) * 0.25;
-  const spd = Math.round(employee.speedBonus * starScale * 100);
-  const qual = Math.round(employee.qualBonus * starScale);
-  const prec = Math.round(employee.precBonus * starScale);
-
-  return (
-    <div
-      className={`relative rounded-2xl p-[3px] bg-gradient-to-br ${meta.gradient} w-full h-full flex-shrink-0 group overflow-hidden transition-all duration-300 hover:-translate-y-1`}
-      style={{ boxShadow: `0 10px 24px -6px ${meta.glow}44` }}
-    >
-      {meta.foil && (
-        <div className="absolute inset-0 z-20 pointer-events-none bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full animate-foil-shimmer" />
-      )}
-      <div className="relative h-full w-full bg-slate-950/95 rounded-[13px] p-2.5 flex flex-col justify-between gap-2 border border-white/15 text-center">
-        <div className="shrink-0">
-          <div className="flex items-center justify-between text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-slate-900 border border-white/10">
-            <span className={meta.text}>{meta.label}</span>
-            <span className="text-yellow-400">{'★'.repeat(stars)}</span>
-          </div>
-          <h3 className="text-sm font-black text-white leading-tight mt-1.5 truncate">{employee.name}</h3>
-          <div className="text-[10px] text-slate-400 truncate">{employee.title}</div>
-        </div>
-
-        <div className="flex items-center justify-center shrink-0">
-          <div className={`w-24 h-24 aspect-square rounded-2xl bg-gradient-to-br ${meta.gradient} p-[2px] relative`}>
-            <div className="w-full h-full bg-slate-900 rounded-[14px] overflow-hidden">
-              <CharacterPortrait id={employee.id || employee.templateId} spriteSheetUrl={spriteSheetUrl} />
-            </div>
-            {count > 1 && (
-              <div className="absolute -top-2 -right-2 bg-slate-950 border border-white/40 text-white text-[10px] font-black px-2 py-0.5 rounded-full z-20">
-                x{count}
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="mt-auto shrink-0 bg-slate-900/95 rounded-xl p-2 border border-white/10 text-left space-y-1">
-          <div className="text-[9px] text-slate-400 uppercase font-bold">Spécialité (x1.5 bonus)</div>
-          <div className="text-xs font-black text-cyan-300 truncate">{employee.specName}</div>
-          <div className="grid grid-cols-3 gap-1 pt-1 border-t border-slate-800 text-center font-mono text-[10px]">
-            <div className="bg-slate-950 rounded py-0.5 text-amber-300 font-bold">+{spd}% Vit</div>
-            <div className="bg-slate-950 rounded py-0.5 text-emerald-300 font-bold">+{qual} Qual</div>
-            <div className="bg-slate-950 rounded py-0.5 text-cyan-300 font-bold">+{prec} Préc</div>
-          </div>
-          {count >= 3 && onMerge && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onMerge(employee); }}
-              className="mt-1.5 w-full bg-gradient-to-r from-emerald-400 to-green-500 text-slate-950 text-[10px] font-black py-1.5 rounded-lg flex items-center justify-center gap-1"
-            >
-              <Sparkles className="w-3 h-3" /> FUSIONNER (3)
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
-
 // ============================================================================
-// ÉTAT INITIAL NOUVEAU JOUEUR (BOUCLE INDUSTRIELLE NATURELLE)
-// ============================================================================
-const createDefaultGameState = () => ({
-  saveVersion: SAVE_VERSION,
-  money: 1200,
-  researchPoints: 15,
-  materials: { alu: 25, steel: 15, plastic: 0, inox: 0, copper: 0, titanium: 0 },
-  finishedLots: [],
-  slots: Array(16).fill(null),
-  metrology: [],
-  support: [],
-  unlockedTechs: [],
-  autoSellRules: {}, // { [partId]: { enabled: boolean, minKeep: number } }
-  autoRestock: {},   // { [matId]: { enabled: boolean, thresholdKg: number, buyKg: number } }
-  contracts: [],
-  claimedMissions: [],
-  inventory: [],     // Cartes d'opérateurs recrutés
-  atelier: { sizeLevel: 1, floor: 'beton' },
-  reputation: { quality: 20, reliability: 20, innovation: 15, capacity: 15, delivery: 20 },
-  stats: {
-    totalPartsProduced: 0,
-    totalRevenue: 0,
-    totalProfit: 0,
-    totalInspected: 0,
-    highQualityParts: 0,
-    contractsCompleted: 0,
-    contractsFailed: 0
-  },
-  lastActiveAt: Date.now()
-});
-
-// ============================================================================
-// APPLICATION PRINCIPALE : CNC EMPIRE TYCOON INDUSTRIEL v2.0
+// 5. COMPOSANT PRINCIPAL : CNC TYCOON GMP
 // ============================================================================
 export default function App() {
-  const [user, setUser] = useState(null);
-  const [activeTab, setActiveTab] = useState('factory');
-  const [toast, setToast] = useState(null);
-  const [cloudStatus, setCloudStatus] = useState('connecting');
-
-  // --- COMPTE & AUTHENTIFICATION ---
-  const [pseudo, setPseudo] = useState('');
-  const [password, setPassword] = useState('');
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [showAuthModal, setShowAuthModal] = useState(false);
-  const [authPseudoInput, setAuthPseudoInput] = useState('');
-  const [authPasswordInput, setAuthPasswordInput] = useState('');
+  // --- AUTHENTIFICATION & PROFIL ---
+  const [pseudo, setPseudo] = useState(() => localStorage.getItem('cnc_pseudo') || '');
+  const [password, setPassword] = useState(() => localStorage.getItem('cnc_password') || '');
+  const [isLoggedIn, setIsLoggedIn] = useState(() => Boolean(localStorage.getItem('cnc_pseudo')));
+  const [authInputPseudo, setAuthInputPseudo] = useState('');
+  const [authInputPass, setAuthInputPass] = useState('');
   const [authError, setAuthError] = useState('');
-  const [isAuthLoading, setIsAuthLoading] = useState(false);
-  const [lastCloudSave, setLastCloudSave] = useState(null);
-  const [confirmReset, setConfirmReset] = useState(false);
+  const [firebaseUser, setFirebaseUser] = useState(null);
 
-  // --- ÉTAT CENTRAL DU JEU ---
-  const [game, setGame] = useState(() => createDefaultGameState());
-  const [marketDemand, setMarketDemand] = useState(() => {
-    const d = {};
-    PARTS_CATALOG.forEach(p => { d[p.id] = 1.0; });
-    return d;
+  // --- ÉTAT DU JEU (SAISON 2) ---
+  const [money, setMoney] = useState(120);
+  const [researchPoints, setResearchPoints] = useState(5);
+  const [clickLevel, setClickLevel] = useState(1);
+  const [spindleRpm, setSpindleRpm] = useState(0);
+  const [spindleSparks, setSpindleSparks] = useState(false);
+
+  const [slots, setSlots] = useState(() =>
+    Array.from({ length: 4 }, () => ({ machineId: null, employeeId: null, partId: 'spacer_alu', progress: 0, status: 'EMPTY' }))
+  );
+  const [materialStock, setMaterialStock] = useState({
+    alu_6061: 12,
+    steel_c45: 5,
+    brass_cw614: 0,
+    inox_316l: 0,
+    peek_hp: 0,
+    ti_6al4v: 0
   });
-  const [marketHeadline, setMarketHeadline] = useState("Marché industriel stable : demande soutenue en mécanique générale.");
+  const [partLots, setPartLots] = useState([]);
+  const [autoSell, setAutoSell] = useState(false);
 
-  // --- ÉTATS UI & MODALES ---
+  const [metrologyOwned, setMetrologyOwned] = useState(['caliper']);
+  const [activeMetroId, setActiveMetroId] = useState('caliper');
+  const [autoInspect, setAutoInspect] = useState(true);
+  const [reputation, setReputation] = useState(10);
+  const [repMetrics, setRepMetrics] = useState({ quality: 65, reliability: 60, innovation: 20, capacity: 25, delivery: 70 });
+
+  const [unlockedTechs, setUnlockedTechs] = useState(['prod_conv', 'met_manual', 'qual_basic', 'meth_std', 'auto_manual', 'mat_base', 'rh_base']);
+  const [selectedTechId, setSelectedTechId] = useState('prod_cnc3');
+  const [hoveredTechId, setHoveredTechId] = useState(null);
+  const [mobileTechBranch, setMobileTechBranch] = useState('Production');
+
+  const [inventory, setInventory] = useState({});
+  const [crateOpens, setCrateOpens] = useState({ standard: 0, engineering: 0, direction: 0 });
+  const [activeCrateTier, setActiveCrateTier] = useState('standard');
+  const [isOpeningCrate, setIsOpeningCrate] = useState(false);
+  const [lastCrateDrop, setLastCrateDrop] = useState(null);
+  const [cardSubTab, setCardSubTab] = useState('deck');
+  const [cardFilterRarity, setCardFilterRarity] = useState('all');
+  const [cardOnlyMergeable, setCardOnlyMergeable] = useState(false);
+  const [cardSortBy, setCardSortBy] = useState('rarity_desc');
+
+  const [contracts, setContracts] = useState([]);
+  const [claimedMissions, setClaimedMissions] = useState([]);
+  const [stats, setStats] = useState({ partsProduced: 0, partsSold: 0, partsInspected: 0, contractsCompleted: 0, totalRevenue: 0 });
+
+  const [atelier, setAtelier] = useState({ sizeId: 'garage', floorId: 'concrete', extras: [] });
+  const [activeTab, setActiveTab] = useState('workshop');
+  const [selectedSlotIdx, setSelectedSlotIdx] = useState(0);
   const [leaderboard, setLeaderboard] = useState([]);
-  const [spriteSheetUrl, setSpriteSheetUrl] = useState(null);
-  const [avatarSource, setAvatarSource] = useState('svg');
-  const [selectedSlotModal, setSelectedSlotModal] = useState(null); // index pour achat/config machine
-  const [assignModalSlot, setAssignModalSlot] = useState(null);     // index pour affectation opérateur
-  const [sellModalLotId, setSellModalLotId] = useState(null);
-  const [sellQuantity, setSellQuantity] = useState(1);
-  const [offlineReport, setOfflineReport] = useState(null);
-  const [chestAnim, setChestAnim] = useState(false);
-  const [chestResult, setChestResult] = useState(null);
-  const [selectedTechBranch, setSelectedTechBranch] = useState('all');
+  const [toasts, setToasts] = useState([]);
+  const [showTutorial, setShowTutorial] = useState(() => !localStorage.getItem('cnc_gmp_tuto_seen'));
+  const [tutorialStep, setTutorialStep] = useState(0);
 
-  const cloudReadyRef = useRef(false);
-  const gameRef = useRef(game);
-  useEffect(() => { gameRef.current = game; }, [game]);
+  // --- COFFRE-FORT ANTI-CHEAT EN MÉMOIRE ---
+  const secureVaultRef = useRef({ money: 120, rp: 5, lastClickTs: 0 });
 
-  const marketRef = useRef(marketDemand);
-  useEffect(() => { marketRef.current = marketDemand; }, [marketDemand]);
-
-  const showMsg = useCallback((msg, tone = 'info') => {
-    setToast({ msg, tone, id: Date.now() });
-  }, []);
-
-  useEffect(() => {
-    if (!toast) return;
-    const t = setTimeout(() => setToast(null), 3600);
-    return () => clearTimeout(t);
-  }, [toast]);
-
-  // --- PROFILS INDUSTRIELS DÉRIVÉS (CENTRALISÉS) ---
-  const techFx = useMemo(() => FactoryEngine.getTechEffects(game.unlockedTechs), [game.unlockedTechs]);
-  const metroProfile = useMemo(() => FactoryEngine.getMetrologyProfile(game.metrology), [game.metrology]);
-  const supportProfile = useMemo(() => FactoryEngine.getSupportProfile(game.support, game.atelier.floor), [game.support, game.atelier.floor]);
-  const certs = useMemo(() => FactoryEngine.getCertifications(game.unlockedTechs, game.metrology, game.reputation), [game.unlockedTechs, game.metrology, game.reputation]);
-  const currentSize = useMemo(() => ATELIER_UPGRADES.sizes.find(s => s.level === game.atelier.sizeLevel) || ATELIER_UPGRADES.sizes[0], [game.atelier.sizeLevel]);
-
-  const globalReputation = useMemo(() => {
-    const r = game.reputation;
-    return Math.round(((r.quality || 0) + (r.reliability || 0) + (r.innovation || 0) + (r.capacity || 0) + (r.delivery || 0)) / 5);
-  }, [game.reputation]);
-
-  const stateContext = useMemo(() => ({
-    inventory: game.inventory,
-    techFx,
-    metro: metroProfile,
-    support: supportProfile,
-    certs
-  }), [game.inventory, techFx, metroProfile, supportProfile, certs]);
-
-  const machinesInstalledCount = useMemo(() => game.slots.filter(Boolean).length, [game.slots]);
-  const totalFinishedPartsCount = useMemo(() => game.finishedLots.reduce((a, l) => a + l.quantity, 0), [game.finishedLots]);
-  const chestCost = useMemo(() => Math.floor(1800 * Math.pow(1.22, game.inventory.length)), [game.inventory.length]);
-
-  // Consommation estimée en kg/min par matériau
-  const materialConsumptionPerMin = useMemo(() => {
-    const map = {};
-    game.slots.forEach((slot, idx) => {
-      if (idx >= currentSize.slots || !slot || !slot.machineId || !slot.partId || slot.paused) return;
-      const evalRes = FactoryEngine.evaluateSlotProduction(slot, stateContext);
-      if (!evalRes) return;
-      const kgPerMin = (evalRes.materialCostPerCycle / evalRes.cycleTime) * 60;
-      map[evalRes.part.materialId] = (map[evalRes.part.materialId] || 0) + kgPerMin;
-    });
-    return map;
-  }, [game.slots, currentSize.slots, stateContext]);
-
-  // ==========================================================================
-  // INITIALISATION FIREBASE (AUTH PUIS DONNÉES — CONFORME AUX 3 RÈGLES)
-  // ==========================================================================
-  useEffect(() => {
-    if (!auth) {
-      setCloudStatus('offline');
-      cloudReadyRef.current = true;
-      return;
-    }
-    const initAuth = async () => {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-        setCloudStatus('online');
-      } catch (e) {
-        console.warn("Erreur auth Firebase :", e);
-        setCloudStatus('offline');
-      }
-    };
-    initAuth();
-    const unsub = onAuthStateChanged(auth, (u) => setUser(u));
-    return () => unsub();
-  }, []);
-
-  // Chargement de la sauvegarde invité (users/{uid}/saves/main), leaderboard & avatars Cloud
-  useEffect(() => {
-    if (!user || !db) return;
-
-    let cancelled = false;
-
-    // 1. Chargement sauvegarde personnelle (mode invité ou reprise)
-    const loadGuestSave = async () => {
-      try {
-        const guestRef = doc(db, 'artifacts', appId, 'users', user.uid, 'saves', 'main');
-        const snap = await getDoc(guestRef);
-        if (!cancelled && snap.exists()) {
-          const migrated = FactoryEngine.migrateSaveData(snap.data());
-          if (migrated) {
-            applyLoadedStateWithOffline(migrated);
-            if (migrated.pseudo) {
-              setPseudo(migrated.pseudo);
-              setPassword(migrated.password || '');
-              setIsLoggedIn(true);
-            }
-          }
-        }
-      } catch (err) {
-        console.warn("Lecture sauvegarde utilisateur :", err);
-      } finally {
-        cloudReadyRef.current = true;
-      }
-    };
-    loadGuestSave();
-
-    // 2. Écoute Classement Général
-    const lbRef = collection(db, 'artifacts', appId, 'public', 'data', 'leaderboard');
-    const unsubLb = onSnapshot(lbRef, (qs) => {
-      if (cancelled) return;
-      const list = [];
-      qs.forEach(d => list.push(d.data()));
-      list.sort((a, b) => (b.score || b.income || 0) - (a.score || a.income || 0));
-      setLeaderboard(list.slice(0, 50));
-      setCloudStatus('online');
-    }, (err) => {
-      console.warn("Erreur lecture leaderboard :", err);
-      if (err.code === 'permission-denied') setCloudStatus('permission_error');
-    });
-
-    // 3. Écoute Planche Avatars Cloud + Fallback /avatars.png
-    const avatarRef = doc(db, 'artifacts', appId, 'public', 'data', 'config', 'avatars');
-    const unsubAv = onSnapshot(avatarRef, (snap) => {
-      if (cancelled) return;
-      if (snap.exists() && snap.data()?.sheetUrl) {
-        setSpriteSheetUrl(snap.data().sheetUrl);
-        setAvatarSource('cloud');
-      } else {
-        const probe = new Image();
-        probe.onload = () => { if (!cancelled) { setSpriteSheetUrl('/avatars.png'); setAvatarSource('static'); } };
-        probe.src = '/avatars.png';
-      }
-    }, (err) => {
-      console.warn("Erreur lecture avatars Cloud :", err);
-    });
-
-    return () => {
-      cancelled = true;
-      unsubLb();
-      unsubAv();
-    };
-  }, [user]);
-
-  // ==========================================================================
-  // SIMULATION HORS-LIGNE CONTRÔLÉE (PLAFONNÉE À 2H, RESPECTE LES STOCKS)
-  // ==========================================================================
-  const applyLoadedStateWithOffline = (loaded) => {
-    const now = Date.now();
-    const elapsedSec = clamp((now - (loaded.lastActiveAt || now)) / 1000, 0, MAX_OFFLINE_SECONDS);
-
-    if (elapsedSec < 20) {
-      setGame({ ...loaded, lastActiveAt: now });
-      if (loaded.wasMigrated) {
-        showMsg("🔄 Ancienne sauvegarde v1 migrée en Tycoon Industriel v2 (argent, cartes et atelier conservés !)");
-      }
-      return;
-    }
-
-    // Simule les cycles complets effectués pendant l'absence en respectant les matières disponibles
-    const simTechFx = FactoryEngine.getTechEffects(loaded.unlockedTechs);
-    const simMetro = FactoryEngine.getMetrologyProfile(loaded.metrology);
-    const simSupport = FactoryEngine.getSupportProfile(loaded.support, loaded.atelier.floor);
-    const simCerts = FactoryEngine.getCertifications(loaded.unlockedTechs, loaded.metrology, loaded.reputation);
-    const simCtx = { inventory: loaded.inventory, techFx: simTechFx, metro: simMetro, support: simSupport, certs: simCerts };
-    const maxSlots = (ATELIER_UPGRADES.sizes.find(s => s.level === loaded.atelier.sizeLevel) || ATELIER_UPGRADES.sizes[0]).slots;
-
-    let simMaterials = { ...loaded.materials };
-    let simLots = [...loaded.finishedLots];
-    let simMoney = loaded.money;
-    let simRP = loaded.researchPoints;
-    let totalProducedOffline = 0;
-    let totalAutoSoldValue = 0;
-    const simStats = { ...loaded.stats };
-
-    const nextSlots = loaded.slots.map((slot, idx) => {
-      if (idx >= maxSlots || !slot || !slot.machineId || !slot.partId || slot.paused) return slot;
-      const evalRes = FactoryEngine.evaluateSlotProduction(slot, simCtx);
-      if (!evalRes) return slot;
-
-      const possibleCyclesByTime = Math.floor((elapsedSec + (slot.cycleProgress || 0)) / evalRes.cycleTime);
-      const availMat = simMaterials[evalRes.part.materialId] || 0;
-      const possibleCyclesByMat = Math.floor(availMat / evalRes.materialCostPerCycle);
-      const actualCycles = Math.min(possibleCyclesByTime, possibleCyclesByMat);
-
-      if (actualCycles > 0) {
-        simMaterials[evalRes.part.materialId] = Math.max(0, availMat - actualCycles * evalRes.materialCostPerCycle);
-        const opTotal = actualCycles * evalRes.opCost;
-        simMoney = Math.max(0, simMoney - opTotal);
-        const qtyMade = actualCycles * evalRes.qtyPerCycle;
-        totalProducedOffline += qtyMade;
-        simStats.totalPartsProduced += qtyMade;
-        if (evalRes.quality >= 90) simStats.highQualityParts += qtyMade;
-        simRP += Math.floor(actualCycles * Math.max(1, evalRes.part.difficulty * 0.6));
-
-        const status = (simMetro.autoInspect || simTechFx.autoInspectUnlock)
-          ? (evalRes.isConforming ? 'conforming' : 'non_conforming')
-          : 'uninspected';
-        if (status !== 'uninspected') simStats.totalInspected += qtyMade;
-
-        simLots = FactoryEngine.mergeBatchIntoLots(simLots, {
-          partId: evalRes.part.id,
-          materialId: evalRes.part.materialId,
-          quantity: qtyMade,
-          quality: evalRes.quality,
-          precision: evalRes.precision,
-          unitCost: evalRes.unitCost,
-          status,
-          actuallyConforming: evalRes.isConforming
-        });
-      }
-      return { ...slot, cycleProgress: 0 };
-    });
-
-    // Vente auto hors-ligne (ne touche jamais les pièces réservées)
-    simLots = simLots.map(lot => {
-      const rule = loaded.autoSellRules?.[lot.partId];
-      if (!rule || !rule.enabled || lot.status === 'non_conforming') return lot;
-      const sellable = Math.max(0, lot.quantity - (lot.reserved || 0) - (rule.minKeep || 0));
-      if (sellable > 0) {
-        const unitP = FactoryEngine.computeUnitSalePrice(lot, marketRef.current, simCerts, simTechFx);
-        const rev = sellable * unitP;
-        simMoney += rev;
-        totalAutoSoldValue += rev;
-        simStats.totalRevenue += rev;
-        simStats.totalProfit += rev - sellable * lot.unitCost;
-        return { ...lot, quantity: lot.quantity - sellable };
-      }
-      return lot;
-    }).filter(l => l.quantity > 0);
-
-    setGame({
-      ...loaded,
-      money: simMoney,
-      researchPoints: simRP,
-      materials: simMaterials,
-      finishedLots: simLots,
-      slots: nextSlots,
-      stats: simStats,
-      lastActiveAt: now
-    });
-
-    if (totalProducedOffline > 0) {
-      setOfflineReport({
-        elapsedSec,
-        parts: totalProducedOffline,
-        revenue: totalAutoSoldValue,
-        wasMigrated: loaded.wasMigrated
-      });
-    } else if (loaded.wasMigrated) {
-      showMsg("🔄 Sauvegarde v1 migrée avec succès vers CNC Tycoon Industriel v2 !");
-    }
+  const addToast = (text, type = 'info') => {
+    const id = `${Date.now()}_${Math.random()}`;
+    setToasts(prev => [...prev.slice(-3), { id, text, type }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 3200);
   };
 
-  // ==========================================================================
-  // BOUCLE DE SIMULATION CENTRALE (250ms — CYCLES CNC, AUTO-RESTOCK, AUTO-SELL, DÉLAIS CONTRATS)
-  // ==========================================================================
+  const adjustMoney = (delta) => {
+    setMoney(prev => {
+      const next = Math.max(0, Number((prev + delta).toFixed(2)));
+      secureVaultRef.current.money = next;
+      return next;
+    });
+  };
+
+  const adjustRP = (delta) => {
+    setResearchPoints(prev => {
+      const next = Math.max(0, Number((prev + delta).toFixed(2)));
+      secureVaultRef.current.rp = next;
+      return next;
+    });
+  };
+
+  // Surveillance d'intégrité mémoire contre l'injection React DevTools
   useEffect(() => {
-    let lastTime = Date.now();
-    const tick = setInterval(() => {
-      const now = Date.now();
-      const dt = Math.min(1.0, (now - lastTime) / 1000);
-      lastTime = now;
+    const guard = setInterval(() => {
+      if (Math.abs(money - secureVaultRef.current.money) > 1.5) {
+        setMoney(secureVaultRef.current.money);
+        addToast('Alerte sécurité : solde restauré.', 'error');
+      }
+      if (Math.abs(researchPoints - secureVaultRef.current.rp) > 1.5) {
+        setResearchPoints(secureVaultRef.current.rp);
+      }
+    }, 1000);
+    return () => clearInterval(guard);
+  }, [money, researchPoints]);
 
-      setGame(prev => {
-        const curSize = ATELIER_UPGRADES.sizes.find(s => s.level === prev.atelier.sizeLevel) || ATELIER_UPGRADES.sizes[0];
-        const curTechFx = FactoryEngine.getTechEffects(prev.unlockedTechs);
-        const curMetro = FactoryEngine.getMetrologyProfile(prev.metrology);
-        const curSupport = FactoryEngine.getSupportProfile(prev.support, prev.atelier.floor);
-        const curCerts = FactoryEngine.getCertifications(prev.unlockedTechs, prev.metrology, prev.reputation);
-        const ctx = { inventory: prev.inventory, techFx: curTechFx, metro: curMetro, support: curSupport, certs: curCerts };
+  // Purge des anciennes sauvegardes (Remise à zéro Saison 2) + Chargement sauvegarde S2
+  useEffect(() => {
+    LEGACY_KEYS.forEach(k => localStorage.removeItem(k));
+    const saved = decodeSecureSave(localStorage.getItem(SAVE_STORAGE_KEY));
+    if (saved) {
+      if (typeof saved.money === 'number') { setMoney(saved.money); secureVaultRef.current.money = saved.money; }
+      if (typeof saved.researchPoints === 'number') { setResearchPoints(saved.researchPoints); secureVaultRef.current.rp = saved.researchPoints; }
+      if (typeof saved.clickLevel === 'number') setClickLevel(saved.clickLevel);
+      if (Array.isArray(saved.slots)) setSlots(saved.slots);
+      if (saved.materialStock) setMaterialStock(prev => ({ ...prev, ...saved.materialStock }));
+      if (Array.isArray(saved.partLots)) setPartLots(saved.partLots);
+      if (typeof saved.autoSell === 'boolean') setAutoSell(saved.autoSell);
+      if (Array.isArray(saved.metrologyOwned)) setMetrologyOwned(saved.metrologyOwned);
+      if (saved.activeMetroId) setActiveMetroId(saved.activeMetroId);
+      if (typeof saved.autoInspect === 'boolean') setAutoInspect(saved.autoInspect);
+      if (typeof saved.reputation === 'number') setReputation(saved.reputation);
+      if (saved.repMetrics) setRepMetrics(saved.repMetrics);
+      if (Array.isArray(saved.unlockedTechs)) setUnlockedTechs(saved.unlockedTechs);
+      if (saved.inventory) setInventory(saved.inventory);
+      if (saved.crateOpens) setCrateOpens(saved.crateOpens);
+      if (Array.isArray(saved.contracts)) setContracts(saved.contracts);
+      if (Array.isArray(saved.claimedMissions)) setClaimedMissions(saved.claimedMissions);
+      if (saved.stats) setStats(saved.stats);
+      if (saved.atelier) setAtelier(saved.atelier);
+    }
+  }, []);
 
-        let money = prev.money;
-        let researchPoints = prev.researchPoints;
-        let materials = { ...prev.materials };
-        let finishedLots = prev.finishedLots;
-        let stats = { ...prev.stats };
-        let reputation = { ...prev.reputation };
-        let changedLots = false;
+  // Auth anonyme Firebase
+  useEffect(() => {
+    if (!auth) return;
+    signInAnonymously(auth).catch(() => {});
+    return onAuthStateChanged(auth, user => setFirebaseUser(user));
+  }, []);
 
-        // 1. Réapprovisionnement automatique (si débloqué par Tech Méthodes 'meth_flow')
-        if (curTechFx.autoRestockUnlock) {
-          MATERIALS_CATALOG.forEach(mat => {
-            const rule = prev.autoRestock?.[mat.id];
-            if (rule && rule.enabled && (materials[mat.id] || 0) < (rule.thresholdKg || 10)) {
-              const buyKg = rule.buyKg || 25;
-              const cost = buyKg * mat.pricePerKg;
-              if (money >= cost) {
-                money -= cost;
-                materials[mat.id] = (materials[mat.id] || 0) + buyKg;
+  // Génération initiale des appels d'offres
+  useEffect(() => {
+    if (contracts.length === 0) {
+      setContracts([
+        generateContractOffer(reputation, unlockedTechs),
+        generateContractOffer(reputation, unlockedTechs),
+        generateContractOffer(reputation, unlockedTechs)
+      ]);
+    }
+  }, []);
+
+  // Bonus globaux calculés
+  const modifiers = useMemo(() => {
+    const floorObj = ATELIER_UPGRADES.floors.find(f => f.id === atelier.floorId) || ATELIER_UPGRADES.floors[0];
+    let speedBonus = floorObj.speedBonus;
+    let qualBonus = floorObj.qualBonus;
+    let precBonus = 0;
+    let priceBonus = 0;
+    let defectReduction = 0;
+
+    if (atelier.extras.includes('crane')) speedBonus += 0.12;
+    if (atelier.extras.includes('agv')) speedBonus += 0.22;
+
+    if (unlockedTechs.includes('qual_spc')) { qualBonus += 5; defectReduction += 0.20; }
+    if (unlockedTechs.includes('qual_iso')) { qualBonus += 8; precBonus += 6; defectReduction += 0.25; }
+    if (unlockedTechs.includes('meth_smed')) speedBonus += 0.15;
+    if (unlockedTechs.includes('meth_lean')) { speedBonus += 0.25; priceBonus += 0.12; }
+    if (unlockedTechs.includes('auto_conv')) speedBonus += 0.10;
+    if (unlockedTechs.includes('auto_robot')) speedBonus += 0.25;
+    if (unlockedTechs.includes('rh_academy')) { speedBonus += 0.15; qualBonus += 3; }
+
+    return { speedBonus, qualBonus, precBonus, priceBonus, defectReduction };
+  }, [atelier, unlockedTechs]);
+
+  const certBonus = useMemo(() => {
+    let bonus = 0;
+    CERTIFICATIONS_CATALOG.forEach(c => {
+      const metroIdx = METROLOGY_CATALOG.findIndex(m => m.id === activeMetroId);
+      const reqIdx = METROLOGY_CATALOG.findIndex(m => m.id === c.reqMetro);
+      if (reputation >= c.reqRep && metroIdx >= reqIdx) bonus += c.bonus;
+    });
+    return bonus;
+  }, [reputation, activeMetroId]);
+
+  // Coûts dynamiques
+  const manualUpgradeCost = Math.round(65 * Math.pow(1.42, clickLevel - 1));
+  const rpStudyCost = Math.round(140 * Math.pow(1.22, Math.floor(unlockedTechs.length - 6)));
+  const getMachineCost = (mId) => {
+    const m = MACHINES_CATALOG.find(x => x.id === mId);
+    if (!m) return 999999;
+    const count = slots.filter(s => s.machineId === mId).length;
+    return Math.round(m.baseCost * Math.pow(m.costMult, count));
+  };
+  const getCrateCost = (tierId) => {
+    const tier = CRATE_TIERS.find(t => t.id === tierId) || CRATE_TIERS[0];
+    const opens = Number(crateOpens?.[tier.id]) || 0;
+    const rhDiscount = unlockedTechs.includes('rh_academy') ? 0.85 : 1.0;
+    return Math.round(tier.baseCost * Math.pow(tier.costMult, opens) * rhDiscount);
+  };
+
+  // --- BOUCLE DE SIMULATION TEMPS RÉEL (TICK 250ms) ---
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const dt = 0.25;
+      setSpindleRpm(prev => Math.max(0, prev - 350));
+
+      setMaterialStock(prevMat => {
+        const nextMat = { ...prevMat };
+        const newlyProduced = [];
+
+        setSlots(prevSlots =>
+          prevSlots.map(slot => {
+            if (!slot.machineId) return slot;
+            const machine = MACHINES_CATALOG.find(m => m.id === slot.machineId);
+            const part = PARTS_CATALOG.find(p => p.id === slot.partId) || PARTS_CATALOG[0];
+            if (!machine || !part) return slot;
+
+            // Bonus opérateur
+            let empMult = 0;
+            let empQual = 0;
+            if (slot.employeeId) {
+              const emp = EMPLOYEES_CATALOG.find(e => e.id === slot.employeeId);
+              const owned = inventory[slot.employeeId];
+              if (emp && owned) {
+                const starBoost = 1 + ((owned.stars || 1) - 1) * 0.35;
+                const specBoost = emp.specialty === machine.id ? 1.5 : 1.0;
+                empMult = emp.baseMult * starBoost * specBoost;
+                empQual = emp.qualBonus;
               }
             }
-          });
-        }
 
-        // 2. Avancement des cycles sur chaque machine active
-        const nextSlots = prev.slots.map((slot, idx) => {
-          if (idx >= curSize.slots || !slot || !slot.machineId || !slot.partId || slot.paused) return slot;
-          const evalRes = FactoryEngine.evaluateSlotProduction(slot, ctx);
-          if (!evalRes) return slot;
+            const effectiveSpeed = Math.max(0.2, machine.speedMult * (1 + modifiers.speedBonus + empMult));
+            const cycleDuration = Math.max(0.5, part.baseCycleSec / effectiveSpeed);
+            const neededKg = part.kgPerPart * machine.batchSize;
 
-          const availMat = materials[evalRes.part.materialId] || 0;
-          if (availMat < evalRes.materialCostPerCycle) {
-            // En attente de matière première : ne remet pas à zéro brutalement, reste en attente propre
-            return slot;
-          }
-
-          let progress = (slot.cycleProgress || 0) + dt;
-          if (progress >= evalRes.cycleTime) {
-            progress -= evalRes.cycleTime;
-            // Consommation matière + coût d'exploitation
-            materials[evalRes.part.materialId] = Math.max(0, availMat - evalRes.materialCostPerCycle);
-            money = Math.max(0, money - evalRes.opCost);
-
-            // Détermination statut de contrôle (auto si scanner optique installé, sinon en attente de contrôle)
-            const autoInspect = curMetro.autoInspect || curTechFx.autoInspectUnlock;
-            let status = 'uninspected';
-            if (autoInspect) {
-              const detectedDefect = !evalRes.isConforming && Math.random() <= curMetro.detectionRate;
-              status = detectedDefect ? 'non_conforming' : 'conforming';
-              stats.totalInspected += evalRes.qtyPerCycle;
+            if (slot.progress === 0 && (nextMat[part.materialId] || 0) < neededKg) {
+              return { ...slot, status: 'NO_MAT' };
             }
 
-            finishedLots = FactoryEngine.mergeBatchIntoLots(finishedLots, {
-              partId: evalRes.part.id,
-              materialId: evalRes.part.materialId,
-              quantity: evalRes.qtyPerCycle,
-              quality: evalRes.quality,
-              precision: evalRes.precision,
-              unitCost: evalRes.unitCost,
-              status,
-              actuallyConforming: evalRes.isConforming
+            let nextProg = slot.progress + dt / cycleDuration;
+            if (nextProg >= 1) {
+              if ((nextMat[part.materialId] || 0) >= neededKg) {
+                nextMat[part.materialId] = Number((nextMat[part.materialId] - neededKg).toFixed(3));
+                const rawQual = Math.min(100, Math.max(30, machine.baseQuality + modifiers.qualBonus + empQual));
+                const defectChance = Math.max(0.01, (100 - rawQual) / 160 * (1 - modifiers.defectReduction));
+                const isConforming = Math.random() > defectChance;
+                newlyProduced.push({
+                  partId: part.id,
+                  qty: machine.batchSize,
+                  quality: Math.round(rawQual),
+                  isConforming,
+                  inspected: autoInspect
+                });
+                nextProg = nextProg - 1;
+              } else {
+                nextProg = 0;
+                return { ...slot, progress: 0, status: 'NO_MAT' };
+              }
+            }
+            return { ...slot, progress: Math.min(0.99, nextProg), status: 'RUNNING' };
+          })
+        );
+
+        if (newlyProduced.length > 0) {
+          let totalAdded = 0;
+          let autoSoldRevenue = 0;
+          let autoSoldQty = 0;
+          let autoInspectedQty = 0;
+
+          setPartLots(prevLots => {
+            const updated = [...prevLots];
+            newlyProduced.forEach(item => {
+              totalAdded += item.qty;
+              if (item.inspected) autoInspectedQty += item.qty;
+
+              if (autoSell && item.inspected && item.isConforming) {
+                const part = PARTS_CATALOG.find(p => p.id === item.partId);
+                const unitVal = (part?.sellPrice || 10) * (1 + modifiers.priceBonus + certBonus) * (item.quality / 85);
+                autoSoldRevenue += unitVal * item.qty;
+                autoSoldQty += item.qty;
+              } else {
+                const idx = updated.findIndex(
+                  l => l.partId === item.partId && l.inspected === item.inspected && l.isConforming === item.isConforming && Math.abs(l.quality - item.quality) <= 3
+                );
+                if (idx >= 0) {
+                  updated[idx] = { ...updated[idx], qty: updated[idx].qty + item.qty };
+                } else {
+                  updated.push({
+                    id: `lot_${Date.now()}_${Math.random()}`,
+                    partId: item.partId,
+                    qty: item.qty,
+                    quality: item.quality,
+                    inspected: item.inspected,
+                    isConforming: item.isConforming
+                  });
+                }
+              }
             });
-            changedLots = true;
+            return updated;
+          });
 
-            stats.totalPartsProduced += evalRes.qtyPerCycle;
-            if (evalRes.quality >= 90) stats.highQualityParts += evalRes.qtyPerCycle;
-            // Gain progressif de Points de Recherche industriels à la fin des cycles
-            researchPoints += Math.max(0.4, evalRes.part.difficulty * 0.45);
-          }
-
-          return { ...slot, cycleProgress: progress };
-        });
-
-        // 3. Vente automatique des lots conformes (ou non contrôlés si configuré) SANS JAMAIS VENDRE LES PIÈCES RÉSERVÉES
-        if (changedLots) {
-          finishedLots = finishedLots.map(lot => {
-            const rule = prev.autoSellRules?.[lot.partId];
-            if (!rule || !rule.enabled) return lot;
-            if (lot.status === 'non_conforming') return lot; // Ne vend jamais un rebut automatiquement
-            const minKeep = Math.max(0, Number(rule.minKeep) || 0);
-            const unreserved = Math.max(0, lot.quantity - (lot.reserved || 0));
-            const toSell = Math.max(0, unreserved - minKeep);
-            if (toSell > 0) {
-              const unitPrice = FactoryEngine.computeUnitSalePrice(lot, marketRef.current, curCerts, curTechFx);
-              const rev = toSell * unitPrice;
-              money += rev;
-              stats.totalRevenue += rev;
-              stats.totalProfit += rev - (toSell * lot.unitCost);
-              return { ...lot, quantity: lot.quantity - toSell };
-            }
-            return lot;
-          }).filter(l => l.quantity > 0);
+          if (autoSoldRevenue > 0) adjustMoney(autoSoldRevenue);
+          setStats(s => ({
+            ...s,
+            partsProduced: s.partsProduced + totalAdded,
+            partsSold: s.partsSold + autoSoldQty,
+            partsInspected: s.partsInspected + autoInspectedQty,
+            totalRevenue: s.totalRevenue + autoSoldRevenue
+          }));
         }
 
-        // 4. Mise à jour du compte à rebours des contrats acceptés + génération de nouvelles offres
-        let contracts = prev.contracts.map(c => {
-          if (c.status === 'accepted') {
-            const nextRem = c.remainingSec - dt;
-            if (nextRem <= 0) {
-              stats.contractsFailed += 1;
-              reputation.delivery = clamp(reputation.delivery - 6, 0, 100);
-              reputation.reliability = clamp(reputation.reliability - 5, 0, 100);
-              return { ...c, remainingSec: 0, status: 'expired' };
-            }
-            return { ...c, remainingSec: nextRem };
-          }
-          return c;
-        });
-
-        const availCount = contracts.filter(c => c.status === 'available').length;
-        if (availCount < 3) {
-          const repAvg = Math.round((reputation.quality + reputation.reliability + reputation.innovation + reputation.capacity + reputation.delivery) / 5);
-          contracts = [...contracts, FactoryEngine.generateContract(prev.unlockedTechs, repAvg, curCerts)];
-        }
-        // Nettoyage des anciens contrats expirés/terminés pour garder la liste propre
-        if (contracts.length > 14) {
-          const active = contracts.filter(c => c.status === 'available' || c.status === 'accepted');
-          const archived = contracts.filter(c => c.status !== 'available' && c.status !== 'accepted').slice(-5);
-          contracts = [...active, ...archived];
-        }
-
-        return {
-          ...prev,
-          money,
-          researchPoints,
-          materials,
-          finishedLots,
-          slots: nextSlots,
-          contracts,
-          reputation,
-          stats,
-          lastActiveAt: now
-        };
+        return nextMat;
       });
     }, 250);
 
-    return () => clearInterval(tick);
-  }, []);
+    return () => clearInterval(interval);
+  }, [modifiers, certBonus, autoSell, autoInspect, inventory]);
 
-  // Flucutation douce du marché industriel toutes les 45 secondes
+  // Sauvegarde automatique locale + Cloud Firebase toutes les 6s
   useEffect(() => {
-    const mInterval = setInterval(() => {
-      const next = {};
-      let hotPart = null;
-      let maxVal = 0;
-      PARTS_CATALOG.forEach(p => {
-        const factor = Number((0.88 + Math.random() * 0.34).toFixed(2));
-        next[p.id] = factor;
-        if (factor > maxVal) { maxVal = factor; hotPart = p; }
-      });
-      setMarketDemand(next);
-      if (hotPart) {
-        setMarketHeadline(`Tendance Marché : Forte demande sur "${hotPart.name}" (+${Math.round((maxVal - 1) * 100)}%)`);
-      }
-    }, 45000);
-    return () => clearInterval(mInterval);
-  }, []);
+    const saveTimer = setInterval(async () => {
+      const payload = {
+        money: secureVaultRef.current.money,
+        researchPoints: secureVaultRef.current.rp,
+        clickLevel,
+        slots,
+        materialStock,
+        partLots,
+        autoSell,
+        metrologyOwned,
+        activeMetroId,
+        autoInspect,
+        reputation,
+        repMetrics,
+        unlockedTechs,
+        inventory,
+        crateOpens,
+        contracts,
+        claimedMissions,
+        stats,
+        atelier,
+        updatedAt: Date.now()
+      };
+      localStorage.setItem(SAVE_STORAGE_KEY, encodeSecureSave(payload));
 
-  // ==========================================================================
-  // SAUVEGARDE CLOUD FIRESTORE (INVITÉ + COMPTE PSEUDO/MDP + CLASSEMENT)
-  // ==========================================================================
-  const syncWithCloud = useCallback(async (silent = true, customAccount = null) => {
-    if (!db || !user) return false;
-    const g = gameRef.current;
-    const activePseudo = (customAccount?.pseudo ?? pseudo).trim();
-    const activePass = (customAccount?.password ?? password).trim();
-    const cleanP = cleanKey(activePseudo);
+      if (db && isLoggedIn && pseudo) {
+        const cleanId = pseudo.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+        try {
+          await setDoc(doc(db, 'artifacts', SEASON_APP_ID, 'public', 'data', 'leaderboard', cleanId), {
+            pseudo,
+            money: Math.round(secureVaultRef.current.money),
+            reputation: Math.round(reputation),
+            partsProduced: stats.partsProduced,
+            updatedAt: Date.now()
+          }, { merge: true });
+        } catch {
+          // Ignorer en mode hors-ligne
+        }
+      }
+    }, 6000);
+    return () => clearInterval(saveTimer);
+  }, [clickLevel, slots, materialStock, partLots, autoSell, metrologyOwned, activeMetroId, autoInspect, reputation, repMetrics, unlockedTechs, inventory, crateOpens, contracts, claimedMissions, stats, atelier, isLoggedIn, pseudo]);
+
+  // --- ACTIONS JOUEUR ---
+  const handleManualMachining = (e) => {
+    // Bloque l'activation par touche Entrée ou Espace (e.detail === 0)
+    if (e && typeof e.detail === 'number' && e.detail === 0) return;
     const now = Date.now();
+    if (now - secureVaultRef.current.lastClickTs < 65) return; // Anti-auto-clicker
+    secureVaultRef.current.lastClickTs = now;
 
-    const payload = {
-      ...g,
-      pseudo: activePseudo,
-      password: activePass,
-      saveVersion: SAVE_VERSION,
-      lastActiveAt: now,
-      updatedAt: now
-    };
+    setSpindleRpm(prev => Math.min(6000, prev + 1450));
+    setSpindleSparks(true);
+    setTimeout(() => setSpindleSparks(false), 180);
 
-    try {
-      // 1. Sauvegarde toujours dans l'espace privé de l'utilisateur courant (survit au F5 sans localStorage)
-      const guestRef = doc(db, 'artifacts', appId, 'users', user.uid, 'saves', 'main');
-      await setDoc(guestRef, payload, { merge: true });
-
-      // 2. Si connecté avec un Pseudo, sauvegarde le compte cross-device & met à jour le Classement
-      if (cleanP) {
-        const accountRef = doc(db, 'artifacts', appId, 'public', 'data', 'accounts', cleanP);
-        await setDoc(accountRef, payload, { merge: true });
-
-        const enterpriseScore = Math.round(g.stats.totalRevenue + g.money * 0.5 + g.stats.contractsCompleted * 5000);
-        const lbRef = doc(db, 'artifacts', appId, 'public', 'data', 'leaderboard', cleanP);
-        await setDoc(lbRef, {
-          pseudo: activePseudo,
-          atelierName: (ATELIER_UPGRADES.sizes.find(s => s.level === g.atelier.sizeLevel) || ATELIER_UPGRADES.sizes[0]).name,
-          score: enterpriseScore,
-          totalRevenue: Math.round(g.stats.totalRevenue),
-          partsProduced: g.stats.totalPartsProduced,
-          contractsCompleted: g.stats.contractsCompleted,
-          reputation: Math.round((g.reputation.quality + g.reputation.reliability + g.reputation.innovation + g.reputation.capacity + g.reputation.delivery) / 5),
-          timestamp: now
-        }, { merge: true });
+    const qty = Math.max(1, Math.floor(1 + (clickLevel - 1) * 0.5));
+    const qual = Math.min(98, 76 + clickLevel * 2);
+    setPartLots(prev => {
+      const idx = prev.findIndex(l => l.partId === 'spacer_alu' && l.inspected && l.isConforming);
+      if (idx >= 0) {
+        const copy = [...prev];
+        copy[idx] = { ...copy[idx], qty: copy[idx].qty + qty };
+        return copy;
       }
-
-      setLastCloudSave(new Date(now).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
-      setCloudStatus('online');
-      if (!silent) showMsg("✅ Sauvegarde Cloud & Classement synchronisés !", "success");
-      return true;
-    } catch (err) {
-      console.warn("Erreur sauvegarde Cloud :", err);
-      if (err.code === 'permission-denied') setCloudStatus('permission_error');
-      if (!silent) showMsg("⚠️ Impossible de joindre Firebase (vérifiez les règles Firestore)", "error");
-      return false;
-    }
-  }, [user, pseudo, password, showMsg]);
-
-  // Auto-save périodique fiable toutes les 10s
-  useEffect(() => {
-    if (!user) return;
-    const t = setInterval(() => {
-      if (cloudReadyRef.current) syncWithCloud(true);
-    }, 10000);
-    return () => clearInterval(t);
-  }, [user, syncWithCloud]);
-
-  // Connexion / Reprise d'une partie existante par Pseudo + Mot de passe
-  const handleAccountLogin = async (e) => {
-    e.preventDefault();
-    setAuthError('');
-    const trimmedP = authPseudoInput.trim();
-    const trimmedPwd = authPasswordInput.trim();
-    const cleanP = cleanKey(trimmedP);
-
-    if (!cleanP || !trimmedPwd) {
-      setAuthError("Saisissez un Pseudo et un Mot de passe.");
-      return;
-    }
-    if (!db || !user) {
-      setAuthError("Connexion au serveur Firebase en cours, réessayez dans un instant.");
-      return;
-    }
-
-    setIsAuthLoading(true);
-    try {
-      const accountRef = doc(db, 'artifacts', appId, 'public', 'data', 'accounts', cleanP);
-      const snap = await getDoc(accountRef);
-
-      if (snap.exists()) {
-        const data = snap.data();
-        if (data.password && String(data.password).trim() !== trimmedPwd) {
-          setAuthError("Mot de passe incorrect pour cet atelier.");
-          setIsAuthLoading(false);
-          return;
-        }
-        const migrated = FactoryEngine.migrateSaveData(data);
-        setPseudo(data.pseudo || trimmedP);
-        setPassword(trimmedPwd);
-        setIsLoggedIn(true);
-        applyLoadedStateWithOffline(migrated);
-        // Sauvegarde immédiatement le format v2 migré dans le profil invité
-        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'saves', 'main'), { ...migrated, pseudo: data.pseudo || trimmedP, password: trimmedPwd }, { merge: true });
-        setShowAuthModal(false);
-        showMsg(`🎉 Atelier "${data.pseudo || trimmedP}" restauré avec succès !`, "success");
-      } else {
-        setPseudo(trimmedP);
-        setPassword(trimmedPwd);
-        setIsLoggedIn(true);
-        await syncWithCloud(false, { pseudo: trimmedP, password: trimmedPwd });
-        setShowAuthModal(false);
-        showMsg(`🚀 Nouvel atelier industriel créé pour ${trimmedP} !`, "success");
-      }
-    } catch (err) {
-      console.warn("Erreur login :", err);
-      setAuthError(err.code === 'permission-denied' ? "Accès refusé par les règles Firestore." : "Erreur réseau Firebase.");
-    } finally {
-      setIsAuthLoading(false);
-    }
-  };
-
-  const handleLogout = async () => {
-    if (isLoggedIn) await syncWithCloud(true);
-    setIsLoggedIn(false);
-    setPseudo('');
-    setPassword('');
-    setAuthPseudoInput('');
-    setAuthPasswordInput('');
-    showMsg("👋 Déconnecté. Vous pouvez charger un autre compte.");
-  };
-
-  const handleResetGame = async () => {
-    const fresh = createDefaultGameState();
-    setGame(fresh);
-    setConfirmReset(false);
-    setShowAuthModal(false);
-    if (db && user) {
-      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'saves', 'main'), { ...fresh, pseudo, password });
-    }
-    showMsg("🔄 Nouvelle entreprise industrielle démarrée à 1 200 € !");
-  };
-
-  // Upload & diffusion Cloud de la planche des 10 avatars
-  const handleUploadSpriteSheet = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const img = new Image();
-      img.onload = async () => {
-        const canvas = document.createElement('canvas');
-        const scale = Math.min(1, 1000 / img.width);
-        canvas.width = Math.round(img.width * scale);
-        canvas.height = Math.round(img.height * scale);
-        const ctx = canvas.getContext('2d');
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.80);
-        setSpriteSheetUrl(dataUrl);
-        setAvatarSource('local');
-        if (db && user && dataUrl.length < 900000) {
-          try {
-            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'config', 'avatars'), { sheetUrl: dataUrl, updatedAt: Date.now() }, { merge: true });
-            setAvatarSource('cloud');
-            showMsg("🎨 Planche d'avatars synchronisée sur le Cloud pour tous les joueurs !", "success");
-            return;
-          } catch {}
-        }
-        showMsg("🎨 Planche des 10 avatars chargée !");
-      };
-      img.src = ev.target.result;
-    };
-    reader.readAsDataURL(file);
-  };
-
-  // ==========================================================================
-  // ACTIONS GAMEPLAY INDUSTRIEL (ACHATS, CONFIG, MÉTROLOGIE, VENTES, CONTRATS)
-  // ==========================================================================
-  const getMachineCost = (macId) => {
-    const mac = MACHINES_CATALOG.find(m => m.id === macId);
-    const owned = game.slots.filter(s => s && s.machineId === macId).length;
-    return Math.round(mac.baseCost * Math.pow(1.22, owned));
-  };
-
-  const handleBuyMachine = (slotIdx, macId) => {
-    const mac = MACHINES_CATALOG.find(m => m.id === macId);
-    if (!mac) return;
-    if (mac.reqTech && !game.unlockedTechs.includes(mac.reqTech)) {
-      const t = TECH_TREE.find(x => x.id === mac.reqTech);
-      showMsg(`🔒 Technologie requise : ${t?.name}`, "error");
-      return;
-    }
-    const cost = getMachineCost(macId);
-    if (game.money < cost) {
-      showMsg(`Trésorerie insuffisante (${formatMoney(cost)} requis)`, "error");
-      return;
-    }
-    const defaultPart = PARTS_CATALOG.find(p => p.compatibleMachines.includes(mac.id) && (!p.reqTech || game.unlockedTechs.includes(p.reqTech)))?.id || null;
-    setGame(prev => {
-      const nextSlots = [...prev.slots];
-      nextSlots[slotIdx] = { machineId: mac.id, employeeId: null, partId: defaultPart, cycleProgress: 0, paused: false };
-      return {
-        ...prev,
-        money: prev.money - cost,
-        slots: nextSlots,
-        reputation: { ...prev.reputation, capacity: clamp(prev.reputation.capacity + 4, 0, 100) }
-      };
+      return [...prev, { id: `lot_${now}`, partId: 'spacer_alu', qty, quality: qual, inspected: true, isConforming: true }];
     });
-    setSelectedSlotModal(null);
-    showMsg(`🏭 ${mac.name} installée sur l'îlot #${slotIdx + 1} !`, "success");
+    setStats(s => ({ ...s, partsProduced: s.partsProduced + qty, partsInspected: s.partsInspected + qty }));
   };
 
-  const handleSellMachine = (slotIdx) => {
-    const slot = game.slots[slotIdx];
-    if (!slot) return;
-    const mac = MACHINES_CATALOG.find(m => m.id === slot.machineId);
-    const refund = Math.round((mac?.baseCost || 0) * 0.5);
-    setGame(prev => {
-      const nextSlots = [...prev.slots];
-      nextSlots[slotIdx] = null;
-      return { ...prev, money: prev.money + refund, slots: nextSlots };
-    });
-    showMsg(`♻️ ${mac?.name} revendue (+${formatMoney(refund)})`);
+  const handleUpgradeManual = () => {
+    if (money < manualUpgradeCost) return addToast('Fonds insuffisants.', 'error');
+    adjustMoney(-manualUpgradeCost);
+    setClickLevel(c => c + 1);
+    addToast(`Outillage manuel niveau ${clickLevel + 1} !`, 'success');
   };
 
-  const handleConfigureSlotPart = (slotIdx, partId) => {
-    setGame(prev => {
-      const nextSlots = [...prev.slots];
-      if (!nextSlots[slotIdx]) return prev;
-      nextSlots[slotIdx] = { ...nextSlots[slotIdx], partId, cycleProgress: 0 };
-      return { ...prev, slots: nextSlots };
-    });
-  };
-
-  const handleToggleSlotPause = (slotIdx) => {
-    setGame(prev => {
-      const nextSlots = [...prev.slots];
-      if (!nextSlots[slotIdx]) return prev;
-      nextSlots[slotIdx] = { ...nextSlots[slotIdx], paused: !nextSlots[slotIdx].paused };
-      return { ...prev, slots: nextSlots };
-    });
-  };
-
-  const handleAssignOperator = (slotIdx, empUid) => {
-    setGame(prev => {
-      const nextSlots = prev.slots.map(s => (s && s.employeeId === empUid) ? { ...s, employeeId: null } : s);
-      if (nextSlots[slotIdx]) nextSlots[slotIdx] = { ...nextSlots[slotIdx], employeeId: empUid || null };
-      return { ...prev, slots: nextSlots };
-    });
-  };
-
-  // Prototypage manuel d'appoint (évite tout blocage si un joueur vide sa trésorerie et ses matières)
-  const handleManualSubcontract = () => {
-    setGame(prev => ({
-      ...prev,
-      money: prev.money + 25,
-      researchPoints: prev.researchPoints + 0.5
-    }));
-  };
-
-  const handleBuyMaterial = (matId, kg) => {
-    const mat = MATERIALS_CATALOG.find(m => m.id === matId);
-    if (!mat) return;
-    if (mat.reqTech && !game.unlockedTechs.includes(mat.reqTech)) {
-      const t = TECH_TREE.find(x => x.id === mat.reqTech);
-      showMsg(`🔒 Technologie Matériaux requise : ${t?.name}`, "error");
-      return;
+  const handleBuyMachine = (machineId) => {
+    const machine = MACHINES_CATALOG.find(m => m.id === machineId);
+    if (!machine) return;
+    if (machine.reqTech && !unlockedTechs.includes(machine.reqTech)) {
+      return addToast('Débloquez la technologie R&D requise.', 'error');
     }
-    const cost = kg * mat.pricePerKg;
-    if (game.money < cost) {
-      showMsg(`Trésorerie insuffisante (${formatMoney(cost)})`, "error");
-      return;
-    }
-    setGame(prev => ({
-      ...prev,
-      money: prev.money - cost,
-      materials: { ...prev.materials, [matId]: (prev.materials[matId] || 0) + kg }
-    }));
-    showMsg(`📦 +${kg} kg de ${mat.short} livrés en magasin !`);
-  };
+    const cost = getMachineCost(machineId);
+    if (money < cost) return addToast('Budget insuffisant.', 'error');
+    const emptyIdx = slots.findIndex(s => !s.machineId);
+    if (emptyIdx === -1) return addToast('Aucun îlot libre ! Agrandissez votre atelier.', 'error');
 
-  // Contrôle Métrologique manuel d'un lot non contrôlé
-  const handleInspectLot = (lotId) => {
-    if (game.metrology.length === 0) {
-      showMsg("🔬 Achetez d'abord un équipement de métrologie (ex: Pied à Coulisse à 450 €) !", "error");
-      return;
-    }
-    setGame(prev => {
-      const idx = prev.finishedLots.findIndex(l => l.lotId === lotId);
-      if (idx < 0) return prev;
-      const lot = prev.finishedLots[idx];
-      if (lot.status !== 'uninspected') return prev;
-
-      const part = PARTS_CATALOG.find(p => p.id === lot.partId);
-      const isActuallyOk = lot.actuallyConforming !== undefined
-        ? lot.actuallyConforming
-        : (lot.quality >= (part?.minQuality || 60) && lot.precision >= (part?.precisionReq || 50));
-
-      // Si la précision requise dépasse la capacité du labo de métrologie, la détection est réduite
-      const labAdequate = metroProfile.maxMeasurablePrecision >= (part?.precisionReq || 50);
-      const effectiveDetect = labAdequate ? metroProfile.detectionRate : metroProfile.detectionRate * 0.5;
-      const detectedDefect = !isActuallyOk && Math.random() <= effectiveDetect;
-      const newStatus = detectedDefect ? 'non_conforming' : 'conforming';
-
-      const nextLots = [...prev.finishedLots];
-      nextLots[idx] = { ...lot, status: newStatus };
-
-      return {
-        ...prev,
-        finishedLots: nextLots,
-        researchPoints: prev.researchPoints + Math.max(1, Math.round(lot.quantity * 0.15)),
-        stats: { ...prev.stats, totalInspected: prev.stats.totalInspected + lot.quantity },
-        reputation: { ...prev.reputation, quality: clamp(prev.reputation.quality + (detectedDefect ? 1 : 0.5), 0, 100) }
-      };
-    });
-    showMsg("🔬 Contrôle métrologique effectué sur le lot !");
-  };
-
-  const handleInspectAllLots = () => {
-    if (game.metrology.length === 0) {
-      showMsg("🔬 Installez au moins un instrument de métrologie !", "error");
-      return;
-    }
-    const uninspected = game.finishedLots.filter(l => l.status === 'uninspected');
-    if (uninspected.length === 0) return;
-    uninspected.forEach(l => handleInspectLot(l.lotId));
-  };
-
-  // Recyclage d'un lot non conforme (récupère 65% de la matière première)
-  const handleRecycleLot = (lotId) => {
-    const lot = game.finishedLots.find(l => l.lotId === lotId);
-    if (!lot) return;
-    const part = PARTS_CATALOG.find(p => p.id === lot.partId);
-    const available = Math.max(0, lot.quantity - (lot.reserved || 0));
-    if (available <= 0) return;
-    const recoveredKg = available * (part?.materialKg || 0.2) * 0.65;
-
-    setGame(prev => ({
-      ...prev,
-      materials: { ...prev.materials, [lot.materialId]: (prev.materials[lot.materialId] || 0) + recoveredKg },
-      finishedLots: prev.finishedLots.map(l => l.lotId === lotId ? { ...l, quantity: l.quantity - available } : l).filter(l => l.quantity > 0)
-    }));
-    showMsg(`♻️ Lot recyclé : +${formatWeight(recoveredKg)} de matière récupérée !`);
-  };
-
-  // Vente manuelle d'une quantité choisie
-  const handleManualSellConfirm = (lotId, qty) => {
-    const lot = game.finishedLots.find(l => l.lotId === lotId);
-    if (!lot) return;
-    const maxSellable = Math.max(0, lot.quantity - (lot.reserved || 0));
-    const actualQty = clamp(Math.floor(qty), 1, maxSellable);
-    if (actualQty <= 0) return;
-
-    const unitPrice = FactoryEngine.computeUnitSalePrice(lot, marketDemand, certs, techFx);
-    const revenue = actualQty * unitPrice;
-    const cost = actualQty * lot.unitCost;
-    const profit = revenue - cost;
-
-    setGame(prev => ({
-      ...prev,
-      money: prev.money + revenue,
-      finishedLots: prev.finishedLots.map(l => l.lotId === lotId ? { ...l, quantity: l.quantity - actualQty } : l).filter(l => l.quantity > 0),
-      stats: { ...prev.stats, totalRevenue: prev.stats.totalRevenue + revenue, totalProfit: prev.stats.totalProfit + profit }
-    }));
-    setSellModalLotId(null);
-    showMsg(`💶 Vente validée : +${formatMoney(revenue)} (Marge : ${formatMoney(profit)})`, "success");
-  };
-
-  // Achat Métrologie / Support / Technologie
-  const handleBuyMetrology = (id) => {
-    const item = METROLOGY_CATALOG.find(m => m.id === id);
-    if (!item || game.metrology.includes(id)) return;
-    if (item.reqTech && !game.unlockedTechs.includes(item.reqTech)) {
-      const t = TECH_TREE.find(x => x.id === item.reqTech);
-      showMsg(`🔒 Technologie requise : ${t?.name}`, "error");
-      return;
-    }
-    if (game.money < item.cost) return;
-    setGame(prev => ({
-      ...prev,
-      money: prev.money - item.cost,
-      metrology: [...prev.metrology, id],
-      reputation: { ...prev.reputation, quality: clamp(prev.reputation.quality + 6, 0, 100) }
-    }));
-    showMsg(`🔬 ${item.name} installé dans le laboratoire !`, "success");
-  };
-
-  const handleBuySupport = (id) => {
-    const item = SUPPORT_CATALOG.find(s => s.id === id);
-    if (!item || game.support.includes(id)) return;
-    if (item.reqTech && !game.unlockedTechs.includes(item.reqTech)) {
-      const t = TECH_TREE.find(x => x.id === item.reqTech);
-      showMsg(`🔒 Technologie requise : ${t?.name}`, "error");
-      return;
-    }
-    if (game.money < item.cost) return;
-    setGame(prev => ({
-      ...prev,
-      money: prev.money - item.cost,
-      support: [...prev.support, id],
-      reputation: { ...prev.reputation, capacity: clamp(prev.reputation.capacity + 5, 0, 100) }
-    }));
-    showMsg(`⚙️ ${item.name} mis en service !`, "success");
-  };
-
-  const handleUnlockTech = (techId) => {
-    const t = TECH_TREE.find(x => x.id === techId);
-    if (!t || game.unlockedTechs.includes(techId)) return;
-    const prereqsOk = t.prereqs.every(p => game.unlockedTechs.includes(p));
-    if (!prereqsOk) { showMsg("🔒 Débloquez d'abord les prérequis technologiques.", "error"); return; }
-    if (game.money < t.costMoney || game.researchPoints < t.costRP) return;
-    setGame(prev => ({
-      ...prev,
-      money: prev.money - t.costMoney,
-      researchPoints: prev.researchPoints - t.costRP,
-      unlockedTechs: [...prev.unlockedTechs, techId],
-      reputation: { ...prev.reputation, innovation: clamp(prev.reputation.innovation + 5, 0, 100) }
-    }));
-    showMsg(`🧠 Technologie débloquée : ${t.name} !`, "success");
-  };
-
-  // Missions : réclamation récompense
-  const handleClaimMission = (mission) => {
-    if (game.claimedMissions.includes(mission.id)) return;
-    setGame(prev => ({
-      ...prev,
-      money: prev.money + mission.rewardMoney,
-      researchPoints: prev.researchPoints + mission.rewardRP,
-      claimedMissions: [...prev.claimedMissions, mission.id],
-      reputation: {
-        ...prev.reputation,
-        reliability: clamp(prev.reputation.reliability + mission.rewardRep, 0, 100),
-        innovation: clamp(prev.reputation.innovation + Math.ceil(mission.rewardRep / 2), 0, 100)
-      }
-    }));
-    showMsg(`🏆 Mission "${mission.title}" validée ! +${formatMoney(mission.rewardMoney)} & +${mission.rewardRP} PR`, "success");
-  };
-
-  // Contrats & Appels d'Offres : Soumission / Acceptation / Livraison
-  const getMatchingStockForContract = (contract) => {
-    return game.finishedLots
-      .filter(l => l.partId === contract.partId && l.status !== 'non_conforming' && l.quality >= contract.minQuality && l.precision >= contract.minPrecision)
-      .reduce((acc, l) => acc + l.quantity, 0);
-  };
-
-  const handleAcceptContract = (contractId, bidMode = 'standard') => {
-    const c = game.contracts.find(x => x.id === contractId);
-    if (!c || c.status !== 'available') return;
-    const activeAccepted = game.contracts.filter(x => x.status === 'accepted').length;
-    if (activeAccepted >= 3) {
-      showMsg("⚠️ Maximum 3 contrats simultanés en cours !", "error");
-      return;
-    }
-    if (c.reqCert === 'iso9001' && !certs.iso9001) { showMsg("🔒 Certification ISO 9001 requise pour cet appel d'offres !", "error"); return; }
-    if (c.reqCert === 'en9100' && !certs.en9100) { showMsg("🔒 Certification EN 9100 Aéronautique requise !", "error"); return; }
-    if (globalReputation < c.minRep) { showMsg(`🔒 Réputation globale ${c.minRep}/100 requise.`, "error"); return; }
-
-    // Soumission (Bid) : Compétitif (-8% prix, 100% succès), Standard (100% prix), Premium (+15% prix, chances selon réputation)
-    let mult = 1.0;
-    if (bidMode === 'competitive') mult = 0.92;
-    if (bidMode === 'premium') {
-      const winChance = clamp(0.45 + (globalReputation - c.minRep) * 0.015, 0.35, 0.92);
-      if (Math.random() > winChance) {
-        setGame(prev => ({
-          ...prev,
-          contracts: prev.contracts.filter(x => x.id !== contractId)
-        }));
-        showMsg(`❌ Soumission Premium rejetée par ${c.clientName} (offre jugée trop chère).`, "error");
-        return;
-      }
-      mult = 1.15;
-    }
-
-    const agreedReward = Math.round(c.baseReward * mult);
-
-    // Réservation automatique des lots déjà conformes en stock pour empêcher la vente auto
-    let needToReserve = c.quantity;
-    setGame(prev => {
-      const nextLots = prev.finishedLots.map(l => {
-        if (needToReserve > 0 && l.partId === c.partId && l.status !== 'non_conforming' && l.quality >= c.minQuality && l.precision >= c.minPrecision) {
-          const free = Math.max(0, l.quantity - (l.reserved || 0));
-          const take = Math.min(free, needToReserve);
-          needToReserve -= take;
-          return { ...l, reserved: (l.reserved || 0) + take };
-        }
-        return l;
-      });
-      return {
-        ...prev,
-        finishedLots: nextLots,
-        contracts: prev.contracts.map(x => x.id === contractId ? { ...x, status: 'accepted', agreedReward, bidType: bidMode } : x)
-      };
-    });
-    showMsg(`📝 Contrat remporté avec ${c.clientName} (${formatMoney(agreedReward)}) !`, "success");
-  };
-
-  const handleDeliverContract = (contractId) => {
-    const c = game.contracts.find(x => x.id === contractId);
-    if (!c || c.status !== 'accepted') return;
-
-    const matching = game.finishedLots.filter(
-      l => l.partId === c.partId && l.status !== 'non_conforming' && l.quality >= c.minQuality && l.precision >= c.minPrecision
+    adjustMoney(-cost);
+    setSlots(prev =>
+      prev.map((s, idx) =>
+        idx === emptyIdx
+          ? { ...s, machineId: machine.id, partId: machine.defaultPart, progress: 0, status: 'RUNNING' }
+          : s
+      )
     );
-    const totalAvail = matching.reduce((a, l) => a + l.quantity, 0);
-    if (totalAvail < c.quantity) {
-      showMsg(`Stock conforme insuffisant (${totalAvail}/${c.quantity} pièces prêtes).`, "error");
+    addToast(`${machine.name} installée sur l'îlot #${emptyIdx + 1} !`, 'success');
+  };
+
+  const handleSellLot = (lotId) => {
+    const lot = partLots.find(l => l.id === lotId);
+    if (!lot) return;
+    if (!lot.inspected) return addToast('Contrôlez d’abord ce lot en Métrologie !', 'error');
+    const part = PARTS_CATALOG.find(p => p.id === lot.partId);
+    if (lot.isConforming) {
+      const unitVal = (part?.sellPrice || 10) * (1 + modifiers.priceBonus + certBonus) * (lot.quality / 85);
+      const gain = unitVal * lot.qty;
+      adjustMoney(gain);
+      setStats(s => ({ ...s, partsSold: s.partsSold + lot.qty, totalRevenue: s.totalRevenue + gain }));
+      addToast(`Lot vendu : +${formatMoney(gain)}`, 'success');
+    } else {
+      const scrapVal = (part?.sellPrice || 10) * 0.2 * lot.qty;
+      adjustMoney(scrapVal);
+      addToast(`Rebuts recyclés : +${formatMoney(scrapVal)}`, 'info');
+    }
+    setPartLots(prev => prev.filter(l => l.id !== lotId));
+  };
+
+  const handleSellAllConforming = () => {
+    let totalGain = 0;
+    let totalQty = 0;
+    const remaining = [];
+    partLots.forEach(lot => {
+      if (lot.inspected && lot.isConforming) {
+        const part = PARTS_CATALOG.find(p => p.id === lot.partId);
+        const unitVal = (part?.sellPrice || 10) * (1 + modifiers.priceBonus + certBonus) * (lot.quality / 85);
+        totalGain += unitVal * lot.qty;
+        totalQty += lot.qty;
+      } else {
+        remaining.push(lot);
+      }
+    });
+    if (totalQty === 0) return addToast('Aucun lot conforme prêt à expédier.', 'info');
+    adjustMoney(totalGain);
+    setPartLots(remaining);
+    setStats(s => ({ ...s, partsSold: s.partsSold + totalQty, totalRevenue: s.totalRevenue + totalGain }));
+    addToast(`Expédition globale (${totalQty} pièces) : +${formatMoney(totalGain)}`, 'success');
+  };
+
+  const handleInspectAll = () => {
+    let count = 0;
+    setPartLots(prev =>
+      prev.map(l => {
+        if (!l.inspected) {
+          count += l.qty;
+          return { ...l, inspected: true };
+        }
+        return l;
+      })
+    );
+    if (count > 0) {
+      setStats(s => ({ ...s, partsInspected: s.partsInspected + count }));
+      addToast(`${count} pièces contrôlées avec succès.`, 'success');
+    }
+  };
+
+  const handleDeliverContract = (ctr) => {
+    const part = PARTS_CATALOG.find(p => p.id === ctr.partId);
+    const matchingLots = partLots.filter(l => l.partId === ctr.partId && l.inspected && l.isConforming && l.quality >= ctr.minQuality);
+    const totalAvail = matchingLots.reduce((acc, l) => acc + l.qty, 0);
+    if (totalAvail < ctr.qty) {
+      return addToast(`Stock conforme insuffisant (${totalAvail}/${ctr.qty} ${part?.name}).`, 'error');
+    }
+
+    // Probabilité selon l'offre tarifaire
+    const winChance = Math.max(0.25, Math.min(1.0, 1.35 - ctr.bidMult * 0.35 + reputation / 250));
+    if (Math.random() > winChance) {
+      addToast(`Offre rejetée par ${ctr.client} (prix trop élevé).`, 'error');
+      setContracts(prev => prev.map(c => (c.id === ctr.id ? generateContractOffer(reputation, unlockedTechs) : c)));
       return;
     }
 
-    // Vérifie si des lots non contrôlés sont livrés (risque d'audit client si pas contrôlé !)
-    const hasUninspected = matching.some(l => l.status === 'uninspected');
-    const bonusControlled = hasUninspected ? 0 : Math.round(c.agreedReward * 0.06);
-    const totalPay = c.agreedReward + bonusControlled;
+    let needed = ctr.qty;
+    setPartLots(prev =>
+      prev
+        .map(l => {
+          if (needed <= 0 || l.partId !== ctr.partId || !l.inspected || !l.isConforming || l.quality < ctr.minQuality) return l;
+          const take = Math.min(l.qty, needed);
+          needed -= take;
+          return { ...l, qty: l.qty - take };
+        })
+        .filter(l => l.qty > 0)
+    );
 
-    let remainingToDeduct = c.quantity;
-    setGame(prev => {
-      const nextLots = prev.finishedLots.map(l => {
-        if (remainingToDeduct > 0 && l.partId === c.partId && l.status !== 'non_conforming' && l.quality >= c.minQuality && l.precision >= c.minPrecision) {
-          const take = Math.min(l.quantity, remainingToDeduct);
-          remainingToDeduct -= take;
-          return { ...l, quantity: l.quantity - take, reserved: Math.max(0, (l.reserved || 0) - take) };
-        }
-        return l;
-      }).filter(l => l.quantity > 0);
-
-      return {
-        ...prev,
-        money: prev.money + totalPay,
-        researchPoints: prev.researchPoints + c.rewardRP,
-        finishedLots: nextLots,
-        contracts: prev.contracts.map(x => x.id === contractId ? { ...x, status: 'completed' } : x),
-        stats: {
-          ...prev.stats,
-          totalRevenue: prev.stats.totalRevenue + totalPay,
-          totalProfit: prev.stats.totalProfit + totalPay * 0.6,
-          contractsCompleted: prev.stats.contractsCompleted + 1
-        },
-        reputation: {
-          quality: clamp(prev.reputation.quality + (hasUninspected ? 1 : 4), 0, 100),
-          reliability: clamp(prev.reputation.reliability + 5, 0, 100),
-          innovation: clamp(prev.reputation.innovation + 2, 0, 100),
-          capacity: clamp(prev.reputation.capacity + 3, 0, 100),
-          delivery: clamp(prev.reputation.delivery + 5, 0, 100)
-        }
-      };
-    });
-
-    showMsg(`🏆 Livraison ${c.clientName} réussie ! +${formatMoney(totalPay)} & +${c.rewardRP} PR`, "success");
+    const payout = Math.round(ctr.baseReward * ctr.bidMult);
+    adjustMoney(payout);
+    adjustRP(ctr.rpReward);
+    setReputation(r => Math.min(100, r + 3));
+    setRepMetrics(m => ({
+      quality: Math.min(100, m.quality + 2),
+      reliability: Math.min(100, m.reliability + 3),
+      innovation: Math.min(100, m.innovation + 2),
+      capacity: Math.min(100, m.capacity + 3),
+      delivery: Math.min(100, m.delivery + 3)
+    }));
+    setStats(s => ({ ...s, contractsCompleted: s.contractsCompleted + 1, partsSold: s.partsSold + ctr.qty, totalRevenue: s.totalRevenue + payout }));
+    setContracts(prev => prev.map(c => (c.id === ctr.id ? generateContractOffer(reputation + 3, unlockedTechs) : c)));
+    addToast(`Contrat ${ctr.client} livré : +${formatMoney(payout)} & +${ctr.rpReward} RP !`, 'success');
   };
 
-  // Recrutement Gacha (Cartes Opérateurs)
-  const handleOpenChest = () => {
-    if (game.money < chestCost || chestAnim) return;
-    setGame(prev => ({ ...prev, money: prev.money - chestCost }));
-    setChestAnim(true);
-    setChestResult(null);
+  const handleBuyResearchPoint = () => {
+    if (money < rpStudyCost) return addToast('Fonds insuffisants pour lancer une étude.', 'error');
+    adjustMoney(-rpStudyCost);
+    adjustRP(10);
+    addToast('+10 Points R&D (RP) acquis !', 'success');
+  };
+
+  const handleUnlockTech = (tech) => {
+    if (unlockedTechs.includes(tech.id)) return;
+    if (tech.req && !unlockedTechs.includes(tech.req)) return addToast('Prérequis principal manquant !', 'error');
+    if (tech.crossReq && !unlockedTechs.includes(tech.crossReq)) {
+      const crossName = TECH_TREE_CATALOG.find(t => t.id === tech.crossReq)?.name || 'Technologie liée';
+      return addToast(`Passerelle requise : ${crossName}`, 'error');
+    }
+    if (money < tech.moneyCost || researchPoints < tech.rpCost) return addToast('Fonds ou Points R&D insuffisants.', 'error');
+    adjustMoney(-tech.moneyCost);
+    adjustRP(-tech.rpCost);
+    setUnlockedTechs(prev => [...prev, tech.id]);
+    addToast(`Technologie acquise : ${tech.name}`, 'success');
+  };
+
+  const handleOpenCrate = (tierId = activeCrateTier) => {
+    const tier = CRATE_TIERS.find(t => t.id === tierId) || CRATE_TIERS[0];
+    if (tier.reqTech && !unlockedTechs.includes(tier.reqTech)) {
+      const reqName = TECH_TREE_CATALOG.find(t => t.id === tier.reqTech)?.name || 'Technologie RH';
+      return addToast(`Débloquez "${reqName}" dans l'arbre R&D !`, 'error');
+    }
+    const cost = getCrateCost(tier.id);
+    if (isOpeningCrate) return;
+    if (money < cost) return addToast(`Budget insuffisant (${formatMoney(cost)} requis).`, 'error');
+    adjustMoney(-cost);
+    setActiveCrateTier(tier.id);
+    setCrateOpens(prev => ({ ...prev, [tier.id]: (Number(prev?.[tier.id]) || 0) + 1 }));
+    setIsOpeningCrate(true);
+    setLastCrateDrop(null);
+
     setTimeout(() => {
       const roll = Math.random() * 100;
-      let cum = 0, rarity = 'COMMON';
-      for (const [r, prob] of Object.entries(CHEST_ODDS)) {
-        cum += prob;
-        if (roll <= cum) { rarity = r; break; }
+      let acc = 0;
+      let chosenRarity = 'commun';
+      const order = ['secret', 'mythique', 'legendaire', 'epique', 'rare', 'commun', 'malus'];
+      for (const r of order) {
+        acc += Number(tier.weights[r]) || 0;
+        if (roll <= acc) {
+          chosenRarity = r;
+          break;
+        }
       }
-      const pool = EMPLOYEES_CATALOG.filter(e => e.rarity === rarity);
-      const picked = pool[Math.floor(Math.random() * pool.length)];
-      const newRec = { uid: `emp_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`, templateId: picked.id, stars: 1 };
-      setGame(prev => ({ ...prev, inventory: [...prev.inventory, newRec] }));
-      setChestAnim(false);
-      setChestResult({ ...picked, ...newRec });
-    }, 900);
+      const pool = EMPLOYEES_CATALOG.filter(e => e.rarity === chosenRarity);
+      const safePool = pool.length > 0 ? pool : EMPLOYEES_CATALOG.filter(e => e.rarity === 'commun');
+      const emp = safePool[Math.floor(Math.random() * safePool.length)];
+      setInventory(prev => {
+        const cur = prev[emp.id] || { count: 0, stars: 1, maxStars: 1 };
+        return { ...prev, [emp.id]: { ...cur, count: cur.count + 1, maxStars: Math.max(cur.maxStars || 1, cur.stars || 1) } };
+      });
+      setIsOpeningCrate(false);
+      setLastCrateDrop(emp);
+    }, 650);
   };
 
-  const handleMergeCards = (tpl) => {
-    const stars = tpl.stars || 1;
-    const free = game.inventory.filter(e => e.templateId === tpl.id && (e.stars || 1) === stars && !game.slots.some(s => s && s.employeeId === e.uid));
-    if (free.length < 3) return;
-    const toRemove = free.slice(0, 3).map(e => e.uid);
-    setGame(prev => ({
+  const handleMergeCard = (empId) => {
+    const cur = inventory[empId];
+    if (!cur || cur.count < 3 || cur.stars >= 5) return;
+    const nextStars = cur.stars + 1;
+    setInventory(prev => ({
       ...prev,
-      inventory: [...prev.inventory.filter(e => !toRemove.includes(e.uid)), { uid: `emp_${Date.now()}_m`, templateId: tpl.id, stars: stars + 1 }]
+      [empId]: { ...cur, count: cur.count - 3, stars: nextStars, maxStars: Math.max(cur.maxStars || 1, nextStars) }
     }));
-    showMsg(`⭐ Fusion réussie : ${tpl.name} passe ${stars + 1}★ !`, "success");
+    addToast(`Fusion réussie : niveau ${nextStars}★ atteint !`, 'success');
   };
 
-  // ==========================================================================
-  // VUE 1 : ATELIER & PRODUCTION (PLAN 2D INTERACTIF + GESTION DES CYCLES)
-  // ==========================================================================
-  const renderFactoryTab = () => {
-    const floorObj = ATELIER_UPGRADES.floors.find(f => f.id === game.atelier.floor) || ATELIER_UPGRADES.floors[0];
-    const hasCrane = game.support.includes('crane');
-    const hasAgv = game.support.includes('agv');
+  const fetchLeaderboard = async () => {
+    if (!db) return;
+    try {
+      const q = query(collection(db, 'artifacts', SEASON_APP_ID, 'public', 'data', 'leaderboard'), limit(30));
+      const snap = await getDocs(q);
+      const list = snap.docs.map(d => d.data()).sort((a, b) => (b.money || 0) - (a.money || 0));
+      setLeaderboard(list);
+    } catch {
+      addToast('Classement indisponible hors-ligne.', 'info');
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'leaderboard') fetchLeaderboard();
+  }, [activeTab]);
+
+  // --- ÉCRAN DE CONNEXION ---
+  const handleLoginSubmit = async (e) => {
+    e.preventDefault();
+    const p = authInputPseudo.trim();
+    const pw = authInputPass.trim();
+    if (p.length < 2 || pw.length < 3) {
+      setAuthError('Pseudo (2 car. min) et mot de passe (3 car. min) requis.');
+      return;
+    }
+    localStorage.setItem('cnc_pseudo', p);
+    localStorage.setItem('cnc_password', pw);
+    setPseudo(p);
+    setPassword(pw);
+    setIsLoggedIn(true);
+    setAuthError('');
+  };
+
+  if (!isLoggedIn) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-5">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-sky-500 to-blue-700 flex items-center justify-center font-black text-lg text-white shadow-lg">
+              GMP
+            </div>
+            <div>
+              <h1 className="text-xl font-black text-white">CNC Tycoon GMP</h1>
+              <p className="text-xs text-cyan-400 font-bold">Saison 2 • Simulation Industrielle</p>
+            </div>
+          </div>
+          <p className="text-xs text-slate-400">
+            Connectez-vous avec votre pseudo GMP pour sauvegarder votre atelier et apparaître au classement général.
+          </p>
+          <form onSubmit={handleLoginSubmit} className="space-y-3">
+            <div>
+              <label className="text-xs font-bold text-slate-300 block mb-1">Pseudo Joueur</label>
+              <input
+                type="text"
+                value={authInputPseudo}
+                onChange={e => setAuthInputPseudo(e.target.value)}
+                placeholder="Ex: Usineur_GMP"
+                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:border-sky-500 outline-none"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-slate-300 block mb-1">Mot de passe</label>
+              <input
+                type="password"
+                value={authInputPass}
+                onChange={e => setAuthInputPass(e.target.value)}
+                placeholder="••••••"
+                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:border-sky-500 outline-none"
+              />
+            </div>
+            {authError && <p className="text-xs text-rose-400 font-bold">{authError}</p>}
+            <button
+              type="submit"
+              className="w-full py-3 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-black text-sm shadow-lg"
+            >
+              Entrer dans l’Atelier
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // ============================================================================
+  // 6. VUES DES ONGLETS
+  // ============================================================================
+  const renderWorkshop = () => {
+    const sizeObj = ATELIER_UPGRADES.sizes.find(s => s.id === atelier.sizeId) || ATELIER_UPGRADES.sizes[0];
+    const floorObj = ATELIER_UPGRADES.floors.find(f => f.id === atelier.floorId) || ATELIER_UPGRADES.floors[0];
+    const readyPartsCount = partLots.filter(l => l.inspected && l.isConforming).reduce((a, b) => a + b.qty, 0);
 
     return (
-      <div className="space-y-6">
-        {/* Bandeau de synthèse rapide & Sous-traitance d'appoint */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-          <div className="lg:col-span-9 bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <h2 className="text-lg font-black text-white flex items-center gap-2">
-                <Factory className="w-5 h-5 text-cyan-400" /> {currentSize.name} — Chaîne de Production Réelle
-              </h2>
-              <p className="text-xs text-slate-400">
-                Les machines consomment vos matières premières pour fabriquer des pièces stockées en lots. Vendez-les ou livrez des contrats !
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        {/* COCKPIT D'USINAGE MANUEL */}
+        <div className="lg:col-span-4 bg-slate-900/95 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between space-y-4">
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-black uppercase text-sky-400">Poste Manuel &amp; Prototypage</span>
+              <span className="text-xs font-bold text-slate-400">Niv. {clickLevel}</span>
+            </div>
+            <ManualSpindleSVG rpm={spindleRpm} sparks={spindleSparks} />
+            <div className="text-center mt-2">
+              <div className="text-xs font-black text-cyan-300">{spindleRpm} RPM</div>
+              <p className="text-[11px] text-slate-400 mt-1">
+                Cliquez avec la souris pour usiner des <b className="text-slate-200">Entretoises Aluminium</b> prêtes à vendre.
               </p>
             </div>
-            <div className="flex flex-wrap gap-2 text-xs font-mono">
-              <span className="px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-cyan-300 font-bold">
-                Îlots : {machinesInstalledCount} / {currentSize.slots}
+          </div>
+
+          <div className="space-y-2">
+            <button
+              type="button"
+              onClick={handleManualMachining}
+              className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-sky-500 to-cyan-600 hover:from-sky-400 hover:to-cyan-500 active:scale-[0.99] text-white font-black text-sm shadow-lg shadow-sky-500/20 transition-all select-none"
+            >
+              USINER UNE PIÈCE (+{Math.max(1, Math.floor(1 + (clickLevel - 1) * 0.5))})
+            </button>
+            <button
+              type="button"
+              onClick={handleUpgradeManual}
+              disabled={money < manualUpgradeCost}
+              className={`w-full py-2.5 px-3 rounded-xl text-xs font-black flex items-center justify-between border ${
+                money >= manualUpgradeCost
+                  ? 'bg-slate-800 hover:bg-slate-700 border-slate-600 text-amber-300'
+                  : 'bg-slate-950 border-slate-800 text-slate-600 cursor-not-allowed'
+              }`}
+            >
+              <span>Outillage Carbure Niv.{clickLevel + 1}</span>
+              <span>{formatMoney(manualUpgradeCost)}</span>
+            </button>
+            {readyPartsCount > 0 && (
+              <button
+                type="button"
+                onClick={handleSellAllConforming}
+                className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs shadow"
+              >
+                Vendre le Stock Conforme ({readyPartsCount} pièces)
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* PLAN 2D INTERACTIF DE L'ATELIER */}
+        <div className="lg:col-span-8 bg-slate-900/95 border border-slate-800 rounded-2xl p-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-base font-black text-white flex items-center gap-2">
+                <Layers className="w-4 h-4 text-sky-400" /> {sizeObj.name} — Plan 2D ({slots.length} îlots)
+              </h2>
+              <p className="text-xs text-slate-400">Sol : {floorObj.name} • Cliquez sur un îlot pour le configurer.</p>
+            </div>
+            <div className="flex items-center gap-2 text-xs">
+              <span className="px-2.5 py-1 rounded-lg bg-slate-800 text-emerald-300 font-bold">
+                Cadence +{Math.round(modifiers.speedBonus * 100)}%
               </span>
-              <span className="px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-emerald-300 font-bold">
-                Stock fini : {totalFinishedPartsCount} pcs
-              </span>
-              <span className="px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-amber-300 font-bold">
-                {marketHeadline}
+              <span className="px-2.5 py-1 rounded-lg bg-slate-800 text-amber-300 font-bold">
+                Qualité +{modifiers.qualBonus}
               </span>
             </div>
           </div>
 
-          <button
-            onClick={handleManualSubcontract}
-            className="lg:col-span-3 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-500 hover:to-teal-600 border border-emerald-400/40 rounded-2xl p-3.5 text-left transition active:scale-95 shadow-lg flex items-center justify-between"
+          <div
+            className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3 rounded-2xl border border-slate-800"
+            style={{ backgroundColor: floorObj.bg }}
           >
-            <div>
-              <div className="text-xs font-black text-white uppercase tracking-wider flex items-center gap-1.5">
-                <Wrench className="w-4 h-4" /> Établi / Retouche
-              </div>
-              <div className="text-[11px] text-emerald-100">Usinage prototype rapide</div>
-            </div>
-            <div className="text-right font-mono">
-              <div className="text-sm font-black text-white">+25 €</div>
-              <div className="text-[10px] text-emerald-200">+0.5 PR</div>
-            </div>
-          </button>
-        </div>
+            {slots.map((slot, idx) => {
+              const machine = MACHINES_CATALOG.find(m => m.id === slot.machineId);
+              const part = PARTS_CATALOG.find(p => p.id === slot.partId);
+              const emp = EMPLOYEES_CATALOG.find(e => e.id === slot.employeeId);
+              return (
+                <div
+                  key={idx}
+                  onClick={() => { setSelectedSlotIdx(idx); setActiveTab('machines'); }}
+                  className={`rounded-xl border p-2.5 cursor-pointer transition-all flex flex-col justify-between min-h-[118px] ${
+                    slot.status === 'NO_MAT'
+                      ? 'bg-rose-950/30 border-rose-500/60'
+                      : machine
+                      ? 'bg-slate-900/90 border-slate-700 hover:border-sky-400'
+                      : 'bg-slate-950/60 border-dashed border-slate-800 hover:border-slate-600'
+                  }`}
+                >
+                  <div className="flex items-center justify-between text-[10px] font-black text-slate-400">
+                    <span>ÎLOT #{idx + 1}</span>
+                    {slot.status === 'NO_MAT' && <span className="text-rose-400">MANQUE MATIÈRE</span>}
+                    {slot.status === 'RUNNING' && <span className="text-emerald-400">EN CYCLE</span>}
+                  </div>
 
-        {/* PLAN 2D DE L'ATELIER EN TEMPS RÉEL (16:9) */}
-        <div className="bg-slate-900 border-2 border-slate-800 rounded-3xl p-4 sm:p-5 shadow-2xl">
-          <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
-            {/* Hall CNC 16 îlots */}
-            <div
-              className="xl:col-span-9 rounded-2xl relative border-4 border-slate-700 overflow-hidden p-3 min-h-[460px]"
-              style={{ backgroundColor: floorObj.color }}
-            >
-              <div className="absolute inset-0 opacity-15 pointer-events-none" style={{ backgroundImage: 'linear-gradient(#fff 1px, transparent 1px), linear-gradient(90deg, #fff 1px, transparent 1px)', backgroundSize: '36px 36px' }} />
-
-              <div className="relative z-10 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                {game.slots.map((slot, idx) => {
-                  const unlocked = idx < currentSize.slots;
-                  if (!unlocked) {
-                    return (
-                      <div key={idx} className="h-44 bg-slate-950/75 border-2 border-dashed border-slate-800 rounded-2xl flex flex-col items-center justify-center text-slate-600 p-3 text-center">
-                        <Lock className="w-5 h-5 mb-1" />
-                        <span className="text-[10px] font-black uppercase">Îlot #{idx + 1} verrouillé</span>
-                        <span className="text-[9px] text-slate-500 mt-0.5">Agrandissez les murs dans Métrologie & Support</span>
-                      </div>
-                    );
-                  }
-
-                  if (!slot || !slot.machineId) {
-                    return (
-                      <button
-                        key={idx}
-                        onClick={() => setSelectedSlotModal(idx)}
-                        className="h-44 bg-slate-950/50 hover:bg-slate-900/80 border-2 border-dashed border-cyan-500/40 hover:border-cyan-400 rounded-2xl flex flex-col items-center justify-center transition group p-3"
-                      >
-                        <div className="w-10 h-10 rounded-full bg-cyan-500/15 border border-cyan-400/40 flex items-center justify-center text-cyan-300 group-hover:scale-110 transition mb-2">
-                          <Plus className="w-5 h-5" />
-                        </div>
-                        <span className="text-xs font-black text-white">ÎLOT #{idx + 1} LIBRE</span>
-                        <span className="text-[10px] text-cyan-300 mt-0.5">Installer une machine CNC</span>
-                      </button>
-                    );
-                  }
-
-                  const evalRes = FactoryEngine.evaluateSlotProduction(slot, stateContext);
-                  const mac = MACHINES_CATALOG.find(m => m.id === slot.machineId);
-                  const availMat = evalRes ? (game.materials[evalRes.part.materialId] || 0) : 0;
-                  const missingMat = evalRes && availMat < evalRes.materialCostPerCycle;
-                  const statusLabel = slot.paused ? 'EN PAUSE' : !slot.partId ? 'À CONFIGURER' : missingMat ? 'MANQUE MATIÈRE' : 'EN PRODUCTION';
-                  const statusColor = slot.paused ? 'bg-slate-600' : !slot.partId ? 'bg-amber-500' : missingMat ? 'bg-rose-500 animate-pulse' : 'bg-emerald-500';
-                  const pct = evalRes ? clamp((slot.cycleProgress / evalRes.cycleTime) * 100, 0, 100) : 0;
-                  const empRec = slot.employeeId ? game.inventory.find(e => e.uid === slot.employeeId) : null;
-                  const empTpl = empRec ? EMPLOYEES_CATALOG.find(t => t.id === empRec.templateId) : null;
-
-                  return (
-                    <div
-                      key={idx}
-                      className="rounded-2xl p-2.5 flex flex-col justify-between border-2 border-white/15 shadow-xl relative overflow-hidden"
-                      style={{ background: `linear-gradient(160deg, ${mac.color}dd 0%, #090d16 92%)` }}
-                    >
-                      {/* En-tête statut */}
-                      <div className="flex items-center justify-between gap-1 text-[9px] font-black z-10">
-                        <span className="bg-slate-950/80 px-2 py-0.5 rounded-md text-white font-mono">#{idx + 1} {mac.name.split(' ')[0]}</span>
-                        <span className={`px-2 py-0.5 rounded-md text-slate-950 font-black ${statusColor}`}>
-                          {statusLabel}
-                        </span>
-                      </div>
-
-                      {/* Illustration + Infos pièce en cours */}
-                      <div className="flex items-center gap-2 my-1.5 z-10">
-                        <div className="w-16 h-14 bg-slate-950/70 rounded-xl p-1 border border-white/10 shrink-0">
-                          <MachineIllustration id={mac.id} animated={!slot.paused && !missingMat && Boolean(slot.partId)} />
-                        </div>
-                        <div className="min-w-0 flex-1 text-left">
-                          <div className="text-xs font-black text-white truncate">{evalRes ? evalRes.part.name : 'Aucune pièce'}</div>
-                          {evalRes ? (
-                            <>
-                              <div className="text-[10px] font-mono text-cyan-300">
-                                x{evalRes.qtyPerCycle} / {evalRes.cycleTime.toFixed(1)}s • {formatWeight(evalRes.materialCostPerCycle)} {evalRes.mat?.short}
-                              </div>
-                              <div className="text-[10px] font-mono flex items-center gap-2 mt-0.5">
-                                <span className={evalRes.quality >= evalRes.part.minQuality ? 'text-emerald-300 font-bold' : 'text-rose-300 font-bold'}>
-                                  Q:{evalRes.quality}
-                                </span>
-                                <span className={evalRes.precision >= evalRes.part.precisionReq ? 'text-cyan-300 font-bold' : 'text-rose-300 font-bold'}>
-                                  P:{evalRes.precision}
-                                </span>
-                                <span className="text-slate-400">({formatMoney(evalRes.unitCost)}/u)</span>
-                              </div>
-                            </>
-                          ) : (
-                            <div className="text-[10px] text-amber-300">Choisissez une pièce à usiner</div>
-                          )}
+                  {machine ? (
+                    <>
+                      <div className="flex items-center gap-2 my-1">
+                        <MachineIllustration machineId={machine.id} active={slot.status === 'RUNNING'} />
+                        <div className="min-w-0">
+                          <div className="text-xs font-black text-white truncate">{machine.name}</div>
+                          <div className="text-[10px] text-sky-300 truncate">{part?.name}</div>
                         </div>
                       </div>
-
-                      {/* Barre de progression du cycle réel */}
-                      <div className="w-full h-2 bg-slate-950 rounded-full overflow-hidden border border-white/10 mb-2 z-10">
-                        <div
-                          className={`h-full transition-all duration-200 ${missingMat ? 'bg-rose-500' : 'bg-gradient-to-r from-cyan-400 to-emerald-400'}`}
-                          style={{ width: `${missingMat ? 100 : pct}%` }}
-                        />
-                      </div>
-
-                      {/* Raison claire si manque matière */}
-                      {missingMat && evalRes && (
-                        <div className="mb-1.5 px-2 py-1 rounded-lg bg-rose-950/90 border border-rose-500/50 text-[9px] text-rose-200 flex items-center justify-between gap-1 z-10">
-                          <span className="truncate">Manque {evalRes.mat?.short}</span>
-                          <button
-                            onClick={() => handleBuyMaterial(evalRes.part.materialId, 15)}
-                            className="px-1.5 py-0.5 bg-rose-500 hover:bg-rose-400 text-white font-black rounded shrink-0"
-                          >
-                            +15kg ({formatMoney(15 * (evalRes.mat?.pricePerKg || 6))})
-                          </button>
+                      <div className="space-y-1">
+                        <div className="w-full h-1.5 bg-slate-950 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-gradient-to-r from-sky-400 to-emerald-400 transition-all"
+                            style={{ width: `${Math.round(slot.progress * 100)}%` }}
+                          />
                         </div>
-                      )}
-
-                      {/* Contrôles rapides du poste */}
-                      <div className="flex items-center justify-between gap-1 z-10 pt-1 border-t border-white/10">
-                        <button
-                          onClick={() => setSelectedSlotModal(idx)}
-                          className="flex-1 py-1 px-2 rounded-lg bg-slate-950/90 hover:bg-slate-800 text-[10px] font-bold text-cyan-300 border border-white/10 truncate"
-                        >
-                          Configurer
-                        </button>
-                        <button
-                          onClick={() => setAssignModalSlot(idx)}
-                          title={empTpl ? `Opérateur : ${empTpl.name}` : 'Affecter un opérateur'}
-                          className={`py-1 px-2 rounded-lg text-[10px] font-bold border flex items-center gap-1 ${empTpl ? 'bg-amber-500/20 border-amber-400/50 text-amber-200' : 'bg-slate-950/90 border-white/10 text-slate-300 hover:text-white'}`}
-                        >
-                          <UserCheck className="w-3 h-3" /> {empTpl ? empTpl.name.split(' ')[0] : 'Équipe'}
-                        </button>
-                        <button
-                          onClick={() => handleToggleSlotPause(idx)}
-                          className="p-1 rounded-lg bg-slate-950/90 hover:bg-slate-800 text-slate-300 border border-white/10"
-                          title={slot.paused ? 'Reprendre' : 'Mettre en pause'}
-                        >
-                          {slot.paused ? <Play className="w-3.5 h-3.5 text-emerald-400" /> : <Pause className="w-3.5 h-3.5 text-amber-400" />}
-                        </button>
+                        <div className="flex items-center justify-between text-[10px] text-slate-400">
+                          <span>{emp ? `👤 ${emp.name}` : 'Sans opérateur'}</span>
+                          <span>{Math.round(slot.progress * 100)}%</span>
+                        </div>
                       </div>
+                    </>
+                  ) : (
+                    <div className="flex-1 flex items-center justify-center text-xs text-slate-500 font-bold">
+                      + Installer Machine
                     </div>
-                  );
-                })}
-              </div>
-
-              {/* Pont Roulant 10T animé */}
-              {hasCrane && (
-                <div className="absolute top-1 bottom-1 w-8 z-20 animate-crane pointer-events-none opacity-80">
-                  <div className="w-full h-full bg-yellow-500/60 border-x-2 border-slate-950 flex items-center justify-center">
-                    <div className="w-5 h-8 bg-slate-950 border border-yellow-300 rounded flex items-center justify-center">
-                      <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
-                    </div>
-                  </div>
+                  )}
                 </div>
-              )}
-
-              {/* Robot AGV animé */}
-              {hasAgv && (
-                <div className="absolute bottom-3 left-0 right-0 z-20 pointer-events-none">
-                  <div className="relative w-12 h-6 bg-slate-950 border-2 border-cyan-400 rounded-lg shadow-[0_0_12px_#22d3ee] animate-agv-h flex items-center justify-center text-[8px] font-mono font-black text-cyan-300">
-                    AGV-01
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Colonne Droite : État des Salles Annexes (Magasin, Labo Métrologie, Contrats actifs) */}
-            <div className="xl:col-span-3 flex flex-col gap-3">
-              {/* Magasin Matières Rapide */}
-              <div className="bg-slate-950 border border-slate-800 rounded-2xl p-3.5">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-black text-white flex items-center gap-1.5">
-                    <Boxes className="w-4 h-4 text-cyan-400" /> Magasin Matières
-                  </span>
-                  <button onClick={() => setActiveTab('inventory')} className="text-[10px] text-cyan-400 font-bold hover:underline">
-                    Gérer →
-                  </button>
-                </div>
-                <div className="space-y-1.5">
-                  {MATERIALS_CATALOG.filter(m => !m.reqTech || game.unlockedTechs.includes(m.reqTech)).map(mat => {
-                    const qty = game.materials[mat.id] || 0;
-                    const rate = materialConsumptionPerMin[mat.id] || 0;
-                    return (
-                      <div key={mat.id} className="flex items-center justify-between bg-slate-900 rounded-xl px-2.5 py-1.5 text-xs border border-slate-800">
-                        <div>
-                          <div className="font-bold text-white flex items-center gap-1.5">
-                            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: mat.color }} />
-                            {mat.short}
-                          </div>
-                          <div className="text-[10px] font-mono text-slate-400">
-                            {formatWeight(qty)} {rate > 0 && <span className="text-amber-400">(-{rate.toFixed(1)} kg/m)</span>}
-                          </div>
-                        </div>
-                        <button
-                          onClick={() => handleBuyMaterial(mat.id, 20)}
-                          className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-cyan-600 text-[10px] font-black text-white transition"
-                        >
-                          +20kg
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Labo Métrologie 20°C */}
-              <div className="bg-slate-950 border border-cyan-500/30 rounded-2xl p-3.5">
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs font-black text-white flex items-center gap-1.5">
-                    <Microscope className="w-4 h-4 text-cyan-400" /> Labo Métrologie 20°C
-                  </span>
-                  <span className="text-[10px] font-mono text-emerald-400 font-bold">{Math.round(metroProfile.detectionRate * 100)}% dét.</span>
-                </div>
-                <div className="text-[11px] text-slate-400 space-y-1">
-                  <div>Précision mesurable : <b className="text-white">{metroProfile.maxMeasurablePrecision}/100</b></div>
-                  <div>Rétroaction procédé : <b className="text-emerald-400">+{metroProfile.processFeedbackBonus} Qual/Préc</b></div>
-                  <div className="flex gap-1.5 pt-1">
-                    <span className={`px-2 py-0.5 rounded text-[9px] font-black border ${certs.iso9001 ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300' : 'bg-slate-900 border-slate-800 text-slate-600'}`}>ISO 9001</span>
-                    <span className={`px-2 py-0.5 rounded text-[9px] font-black border ${certs.en9100 ? 'bg-amber-500/20 border-amber-400 text-amber-300' : 'bg-slate-900 border-slate-800 text-slate-600'}`}>EN 9100 AÉRO</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Contrats en cours */}
-              <div className="bg-slate-950 border border-amber-500/30 rounded-2xl p-3.5 flex-1">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-black text-white flex items-center gap-1.5">
-                    <Briefcase className="w-4 h-4 text-amber-400" /> Contrats Actifs
-                  </span>
-                  <button onClick={() => setActiveTab('contracts')} className="text-[10px] text-amber-400 font-bold hover:underline">
-                    Offres →
-                  </button>
-                </div>
-                {game.contracts.filter(c => c.status === 'accepted').length === 0 ? (
-                  <p className="text-[11px] text-slate-500">Aucun contrat accepté. Consultez les appels d'offres clients !</p>
-                ) : (
-                  <div className="space-y-2">
-                    {game.contracts.filter(c => c.status === 'accepted').map(c => {
-                      const part = PARTS_CATALOG.find(p => p.id === c.partId);
-                      const ready = getMatchingStockForContract(c);
-                      const isReady = ready >= c.quantity;
-                      return (
-                        <div key={c.id} className="bg-slate-900 rounded-xl p-2 border border-slate-800 text-xs">
-                          <div className="flex justify-between font-bold text-white">
-                            <span className="truncate">{part?.name}</span>
-                            <span className="text-amber-400 font-mono">{formatDuration(c.remainingSec)}</span>
-                          </div>
-                          <div className="flex justify-between items-center mt-1 text-[10px]">
-                            <span className={isReady ? 'text-emerald-400 font-black' : 'text-slate-400'}>
-                              {ready}/{c.quantity} pcs (Q≥{c.minQuality})
-                            </span>
-                            {isReady && (
-                              <button onClick={() => handleDeliverContract(c.id)} className="px-2 py-0.5 rounded bg-emerald-500 text-slate-950 font-black">
-                                Livrer !
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
+              );
+            })}
           </div>
         </div>
       </div>
     );
   };
 
-  // ==========================================================================
-  // VUE 2 : MATIÈRES PREMIÈRES, INVENTAIRE PAR LOTS & COMMERCIALISATION
-  // ==========================================================================
-  const renderInventoryTab = () => {
-    const uninspectedCount = game.finishedLots.filter(l => l.status === 'uninspected').length;
-    const activeParts = PARTS_CATALOG.filter(p => !p.reqTech || game.unlockedTechs.includes(p.reqTech));
+  const renderMachines = () => {
+    const ownedEmployees = EMPLOYEES_CATALOG.filter(e => inventory[e.id] && inventory[e.id].count > 0);
 
     return (
-      <div className="space-y-6">
-        {/* SECTION 1 : APPROVISIONNEMENT MATIÈRES PREMIÈRES */}
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl">
-          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-            <div>
-              <h2 className="text-lg font-black text-white flex items-center gap-2">
-                <ShoppingCart className="w-5 h-5 text-cyan-400" /> Approvisionnement Matières Premières
-              </h2>
-              <p className="text-xs text-slate-400">Achetez vos barres et lopins bruts. La réapprovisionnement automatique se débloque dans l'onglet Technologie (Méthodes).</p>
-            </div>
-            {techFx.materialSave > 0 && (
-              <span className="px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-xs font-black">
-                Lean 4.0 actif : -{Math.round(techFx.materialSave * 100)}% chutes matière
-              </span>
-            )}
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {MATERIALS_CATALOG.map(mat => {
-              const locked = mat.reqTech && !game.unlockedTechs.includes(mat.reqTech);
-              const reqTechObj = locked ? TECH_TREE.find(t => t.id === mat.reqTech) : null;
-              const stockKg = game.materials[mat.id] || 0;
-              const ratePerMin = materialConsumptionPerMin[mat.id] || 0;
-              const autoRule = game.autoRestock?.[mat.id] || { enabled: false, thresholdKg: 15, buyKg: 30 };
-
+      <div className="space-y-4">
+        {/* CATALOGUE D'ACHAT DE MACHINES */}
+        <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4">
+          <h2 className="text-base font-black text-white mb-3 flex items-center gap-2">
+            <Cog className="w-5 h-5 text-sky-400" /> Acheter &amp; Installer une Machine-Outil
+          </h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {MACHINES_CATALOG.map(m => {
+              const unlocked = !m.reqTech || unlockedTechs.includes(m.reqTech);
+              const cost = getMachineCost(m.id);
+              const reqName = m.reqTech ? TECH_TREE_CATALOG.find(t => t.id === m.reqTech)?.name : null;
               return (
-                <div key={mat.id} className={`rounded-2xl p-4 border-2 flex flex-col justify-between ${locked ? 'bg-slate-950/60 border-slate-800/80 opacity-65' : 'bg-slate-950 border-slate-800'}`}>
+                <div key={m.id} className={`rounded-2xl border p-3 flex flex-col justify-between ${unlocked ? 'bg-slate-950/90 border-slate-800' : 'bg-slate-950/40 border-slate-900 opacity-75'}`}>
                   <div>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="w-3 h-3 rounded-full" style={{ backgroundColor: mat.color }} />
-                        <h3 className="font-black text-white text-sm">{mat.name}</h3>
+                    <div className="flex items-center gap-2.5 mb-2">
+                      <MachineIllustration machineId={m.id} active={false} />
+                      <div>
+                        <div className="text-xs font-black text-white">{m.name}</div>
+                        <div className="text-[10px] text-sky-400 font-bold">{m.category} • x{m.batchSize} pcs/cycle</div>
                       </div>
-                      <span className="font-mono text-xs font-black text-amber-400">{mat.pricePerKg} €/kg</span>
                     </div>
-                    <p className="text-[11px] text-slate-400 mt-1">{mat.desc}</p>
-
-                    {locked ? (
-                      <div className="mt-3 p-2.5 rounded-xl bg-slate-900 border border-slate-800 text-[11px] text-amber-300 flex items-center gap-2">
-                        <Lock className="w-4 h-4 shrink-0" />
-                        <span>Débloqué par : <b>{reqTechObj?.name}</b></span>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="mt-3 flex items-center justify-between bg-slate-900 rounded-xl px-3 py-2 border border-slate-800 font-mono">
-                          <div>
-                            <div className="text-[9px] text-slate-500 uppercase">En Stock</div>
-                            <div className="text-base font-black text-white">{formatWeight(stockKg)}</div>
-                          </div>
-                          <div className="text-right">
-                            <div className="text-[9px] text-slate-500 uppercase">Consommation</div>
-                            <div className="text-xs font-bold text-amber-400">{ratePerMin > 0 ? `-${ratePerMin.toFixed(1)} kg/min` : '0 kg/min'}</div>
-                          </div>
-                        </div>
-
-                        <div className="mt-3 grid grid-cols-3 gap-2">
-                          {[10, 50, 200].map(qty => {
-                            const cost = qty * mat.pricePerKg;
-                            const canBuy = game.money >= cost;
-                            return (
-                              <button
-                                key={qty}
-                                onClick={() => handleBuyMaterial(mat.id, qty)}
-                                disabled={!canBuy}
-                                className={`py-1.5 rounded-xl text-[11px] font-black transition ${canBuy ? 'bg-cyan-600 hover:bg-cyan-500 text-white' : 'bg-slate-900 text-slate-600 cursor-not-allowed'}`}
-                              >
-                                +{qty}kg<div className="text-[9px] font-mono opacity-80">{formatMoney(cost)}</div>
-                              </button>
-                            );
-                          })}
-                        </div>
-
-                        {/* Auto-restock si débloqué */}
-                        {techFx.autoRestockUnlock && (
-                          <div className="mt-2.5 pt-2 border-t border-slate-800 flex items-center justify-between text-[11px]">
-                            <span className="text-slate-400">Réappro auto (&lt;15kg → +30kg)</span>
-                            <button
-                              onClick={() => setGame(prev => ({
-                                ...prev,
-                                autoRestock: {
-                                  ...prev.autoRestock,
-                                  [mat.id]: { enabled: !autoRule.enabled, thresholdKg: 15, buyKg: 30 }
-                                }
-                              }))}
-                              className={`px-2.5 py-0.5 rounded-full font-black text-[10px] ${autoRule.enabled ? 'bg-emerald-500 text-slate-950' : 'bg-slate-800 text-slate-400'}`}
-                            >
-                              {autoRule.enabled ? 'ACTIF' : 'OFF'}
-                            </button>
-                          </div>
-                        )}
-                      </>
-                    )}
+                    <p className="text-[11px] text-slate-400 mb-2">{m.desc}</p>
                   </div>
+                  {!unlocked ? (
+                    <div className="text-[11px] text-amber-400 font-bold bg-amber-950/30 border border-amber-800/50 rounded-xl px-2.5 py-1.5 text-center">
+                      🔒 R&amp;D : {reqName}
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => handleBuyMachine(m.id)}
+                      disabled={money < cost}
+                      className={`w-full py-2 px-3 rounded-xl text-xs font-black flex items-center justify-between ${
+                        money >= cost ? 'bg-sky-600 hover:bg-sky-500 text-white' : 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                      }`}
+                    >
+                      <span>Installer</span>
+                      <span>{formatMoney(cost)}</span>
+                    </button>
+                  )}
                 </div>
               );
             })}
           </div>
         </div>
 
-        {/* SECTION 2 : INVENTAIRE DES LOTS DE PRODUITS FINIS & VENTE MANUELLE */}
-        <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
-          <div className="xl:col-span-8 bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl">
-            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-              <div>
-                <h2 className="text-lg font-black text-white flex items-center gap-2">
-                  <Layers className="w-5 h-5 text-emerald-400" /> Stock de Pièces Finies (Gestion par Lots)
-                </h2>
-                <p className="text-xs text-slate-400">Contrôlez vos lots en métrologie pour certifier leur conformité (+8% de valeur) avant de les vendre ou livrer.</p>
-              </div>
-              {uninspectedCount > 0 && (
-                <button
-                  onClick={handleInspectAllLots}
-                  className="px-3.5 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-black flex items-center gap-1.5 shadow"
-                >
-                  <Microscope className="w-4 h-4" /> Contrôler tous les lots ({uninspectedCount})
-                </button>
-              )}
-            </div>
-
-            {game.finishedLots.length === 0 ? (
-              <div className="py-12 text-center text-slate-500 border-2 border-dashed border-slate-800 rounded-2xl text-sm">
-                Aucune pièce en stock. Installez et lancez une machine dans l'onglet <b>Atelier & Production</b> !
-              </div>
-            ) : (
-              <div className="space-y-2.5 max-h-[520px] overflow-y-auto custom-scrollbar pr-1">
-                {game.finishedLots.map(lot => {
-                  const part = PARTS_CATALOG.find(p => p.id === lot.partId);
-                  const unitPrice = FactoryEngine.computeUnitSalePrice(lot, marketDemand, certs, techFx);
-                  const margin = unitPrice - lot.unitCost;
-                  const sellable = Math.max(0, lot.quantity - (lot.reserved || 0));
-                  const statusBadge =
-                    lot.status === 'conforming' ? { text: 'CONFORME ✓', cls: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' } :
-                    lot.status === 'non_conforming' ? { text: 'NON CONFORME ✕', cls: 'bg-rose-500/20 text-rose-300 border-rose-500/40' } :
-                    { text: 'NON CONTRÔLÉ', cls: 'bg-amber-500/20 text-amber-300 border-amber-500/40' };
-
-                  return (
-                    <div key={lot.lotId} className="bg-slate-950 border border-slate-800 rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-3">
-                      <div className="min-w-[200px]">
-                        <div className="flex items-center gap-2">
-                          <span className="font-black text-white text-sm">{part?.name}</span>
-                          <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${statusBadge.cls}`}>{statusBadge.text}</span>
-                        </div>
-                        <div className="text-xs font-mono text-slate-400 mt-1 flex flex-wrap gap-3">
-                          <span>Qté : <b className="text-white">{lot.quantity}</b> {lot.reserved > 0 && <span className="text-amber-400">({lot.reserved} rés. contrat)</span>}</span>
-                          <span>Qualité : <b className="text-emerald-300">{lot.quality}/100</b></span>
-                          <span>Précision : <b className="text-cyan-300">{lot.precision}/100</b></span>
-                        </div>
-                      </div>
-
-                      <div className="text-right font-mono text-xs">
-                        <div className="text-emerald-400 font-black">{formatMoney(unitPrice)} / pc</div>
-                        <div className="text-[10px] text-slate-400">
-                          Coût : {formatMoney(lot.unitCost)} • Marge : <span className={margin >= 0 ? 'text-emerald-400' : 'text-rose-400'}>{formatMoney(margin)}</span>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        {lot.status === 'uninspected' && (
-                          <button
-                            onClick={() => handleInspectLot(lot.lotId)}
-                            className="px-3 py-1.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-600 text-cyan-300 hover:text-white border border-cyan-500/40 text-xs font-black transition flex items-center gap-1"
-                          >
-                            <Microscope className="w-3.5 h-3.5" /> Contrôler
-                          </button>
-                        )}
-                        {lot.status === 'non_conforming' && sellable > 0 && (
-                          <button
-                            onClick={() => handleRecycleLot(lot.lotId)}
-                            className="px-3 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-600 text-amber-300 hover:text-white border border-amber-500/40 text-xs font-black transition flex items-center gap-1"
-                          >
-                            <Recycle className="w-3.5 h-3.5" /> Recycler
-                          </button>
-                        )}
-                        <button
-                          disabled={sellable <= 0}
-                          onClick={() => { setSellModalLotId(lot.lotId); setSellQuantity(sellable); }}
-                          className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition ${sellable > 0 ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}
-                        >
-                          Vendre ({sellable})
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          {/* SECTION 3 : RÈGLES DE VENTE AUTOMATIQUE & MARCHÉ */}
-          <div className="xl:col-span-4 bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl">
-            <h2 className="text-base font-black text-white flex items-center gap-2 mb-1">
-              <TrendingUp className="w-5 h-5 text-amber-400" /> Vente Automatique & Marché
-            </h2>
-            <p className="text-[11px] text-slate-400 mb-4">
-              Activez l'expédition automatique par référence. Les pièces réservées aux contrats et les lots non conformes ne sont <b>jamais</b> vendus automatiquement.
-            </p>
-
-            <div className="space-y-2.5 max-h-[480px] overflow-y-auto custom-scrollbar pr-1">
-              {activeParts.map(part => {
-                const rule = game.autoSellRules?.[part.id] || { enabled: false, minKeep: 10 };
-                const demand = marketDemand[part.id] || 1.0;
-                const pct = Math.round((demand - 1) * 100);
-                return (
-                  <div key={part.id} className="bg-slate-950 border border-slate-800 rounded-2xl p-3 space-y-2">
-                    <div className="flex items-center justify-between gap-2">
+        {/* CONFIGURATION DES ÎLOTS ACTIFS */}
+        <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4 space-y-3">
+          <h3 className="text-base font-black text-white">Pilotage des Îlots Installés</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {slots.map((slot, idx) => {
+              if (!slot.machineId) return null;
+              const machine = MACHINES_CATALOG.find(m => m.id === slot.machineId);
+              const compatibleParts = PARTS_CATALOG.filter(
+                p => p.allowedMachines.includes(machine.id) && (!p.reqTech || unlockedTechs.includes(p.reqTech))
+              );
+              return (
+                <div key={idx} className={`rounded-2xl border p-3.5 bg-slate-950/90 space-y-2.5 ${selectedSlotIdx === idx ? 'border-sky-500' : 'border-slate-800'}`}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <MachineIllustration machineId={machine.id} active={slot.status === 'RUNNING'} />
                       <div>
-                        <div className="text-xs font-black text-white">{part.name}</div>
-                        <div className="text-[10px] font-mono text-slate-400">
-                          Base {part.baseValue} € • Marché : <span className={pct >= 0 ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>{pct >= 0 ? `+${pct}%` : `${pct}%`}</span>
-                        </div>
+                        <div className="text-xs font-black text-white">Îlot #{idx + 1} • {machine.name}</div>
+                        <div className="text-[10px] text-slate-400">Qualité base {machine.baseQuality}/100 • Batch x{machine.batchSize}</div>
                       </div>
-                      <button
-                        onClick={() => setGame(prev => ({
-                          ...prev,
-                          autoSellRules: { ...prev.autoSellRules, [part.id]: { ...rule, enabled: !rule.enabled } }
-                        }))}
-                        className={`px-3 py-1 rounded-full text-[10px] font-black transition ${rule.enabled ? 'bg-emerald-500 text-slate-950' : 'bg-slate-800 text-slate-400'}`}
-                      >
-                        {rule.enabled ? 'AUTO ON' : 'MANUEL'}
-                      </button>
                     </div>
-
-                    {rule.enabled && (
-                      <div className="flex items-center justify-between text-[10px] pt-1.5 border-t border-slate-800">
-                        <span className="text-slate-400">Stock min. à conserver :</span>
-                        <div className="flex items-center gap-1.5">
-                          {[0, 10, 25, 50].map(val => (
-                            <button
-                              key={val}
-                              onClick={() => setGame(prev => ({
-                                ...prev,
-                                autoSellRules: { ...prev.autoSellRules, [part.id]: { ...rule, minKeep: val } }
-                              }))}
-                              className={`px-2 py-0.5 rounded font-mono font-bold ${rule.minKeep === val ? 'bg-cyan-500 text-slate-950' : 'bg-slate-800 text-slate-300'}`}
-                            >
-                              {val}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                    <button
+                      onClick={() => {
+                        setSlots(prev => prev.map((s, i) => (i === idx ? { machineId: null, employeeId: null, partId: 'spacer_alu', progress: 0, status: 'EMPTY' } : s)));
+                        addToast(`Îlot #${idx + 1} libéré.`, 'info');
+                      }}
+                      className="p-1.5 rounded-lg bg-slate-900 hover:bg-rose-950 text-slate-400 hover:text-rose-400"
+                      title="Démonter la machine"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
                   </div>
-                );
-              })}
-            </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <label className="text-[10px] text-slate-400 font-bold block mb-1">Pièce usinée</label>
+                      <select
+                        value={slot.partId}
+                        onChange={e =>
+                          setSlots(prev => prev.map((s, i) => (i === idx ? { ...s, partId: e.target.value, progress: 0 } : s)))
+                        }
+                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-white font-bold"
+                      >
+                        {compatibleParts.map(p => (
+                          <option key={p.id} value={p.id}>
+                            {p.name} ({formatMoney(p.sellPrice)})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400 font-bold block mb-1">Opérateur affecté</label>
+                      <select
+                        value={slot.employeeId || ''}
+                        onChange={e => {
+                          const empId = e.target.value || null;
+                          setSlots(prev =>
+                            prev.map((s, i) => {
+                              if (i === idx) return { ...s, employeeId: empId };
+                              if (empId && s.employeeId === empId) return { ...s, employeeId: null };
+                              return s;
+                            })
+                          );
+                        }}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-white font-bold"
+                      >
+                        <option value="">-- Aucun opérateur --</option>
+                        {ownedEmployees.map(emp => (
+                          <option key={emp.id} value={emp.id}>
+                            {emp.name} ({emp.baseMult >= 0 ? `+${Math.round(emp.baseMult * 100)}%` : `${Math.round(emp.baseMult * 100)}%`})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>
     );
   };
 
-  // ==========================================================================
-  // VUE 3 : MÉTROLOGIE, AUTOMATISATION & AGRANDISSEMENT LOCAUX
-  // ==========================================================================
-  const renderMetrologyAndSupportTab = () => (
-    <div className="space-y-6">
-      {/* Laboratoire de Métrologie */}
-      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl">
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-          <div>
-            <h2 className="text-lg font-black text-white flex items-center gap-2">
-              <Microscope className="w-5 h-5 text-cyan-400" /> Laboratoire de Métrologie & Contrôle Qualité
-            </h2>
-            <p className="text-xs text-slate-400">
-              Ces instruments ne fabriquent pas de pièces : ils détectent les non-conformités, améliorent les procédés suivants et débloquent les certifications ISO 9001 & EN 9100.
-            </p>
-          </div>
-          <div className="flex gap-3 font-mono text-xs bg-slate-950 px-4 py-2 rounded-xl border border-slate-800">
-            <span>Détection : <b className="text-cyan-400">{Math.round(metroProfile.detectionRate * 100)}%</b></span>
-            <span>Précision max : <b className="text-emerald-400">{metroProfile.maxMeasurablePrecision}/100</b></span>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {METROLOGY_CATALOG.map(m => {
-            const owned = game.metrology.includes(m.id);
-            const locked = m.reqTech && !game.unlockedTechs.includes(m.reqTech);
-            const reqTechObj = locked ? TECH_TREE.find(t => t.id === m.reqTech) : null;
-            const canBuy = !owned && !locked && game.money >= m.cost;
-
+  const renderStocks = () => (
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+      {/* MATIÈRES PREMIÈRES */}
+      <div className="lg:col-span-5 bg-slate-900/95 border border-slate-800 rounded-2xl p-4 space-y-3">
+        <h2 className="text-base font-black text-white flex items-center gap-2">
+          <Package className="w-5 h-5 text-amber-400" /> Approvisionnement Matières Premières
+        </h2>
+        <div className="space-y-2">
+          {MATERIALS_CATALOG.map(mat => {
+            const unlocked = !mat.reqTech || unlockedTechs.includes(mat.reqTech);
+            const stock = Number(materialStock[mat.id] || 0);
+            const cost10 = Math.round(mat.costPerKg * 10);
+            const cost50 = Math.round(mat.costPerKg * 50 * 0.92);
             return (
-              <div key={m.id} className={`rounded-2xl p-4 border-2 flex flex-col justify-between ${owned ? 'bg-emerald-950/25 border-emerald-500/40' : 'bg-slate-950 border-slate-800'}`}>
-                <div>
-                  <div className="flex items-center justify-between gap-2">
-                    <h3 className="font-black text-white text-sm">{m.name}</h3>
-                    {owned && <span className="text-[10px] font-black text-emerald-400 flex items-center gap-1"><Check className="w-3.5 h-3.5" /> Installé</span>}
+              <div key={mat.id} className={`p-3 rounded-xl border ${unlocked ? 'bg-slate-950/90 border-slate-800' : 'bg-slate-950/40 border-slate-900 opacity-60'}`}>
+                <div className="flex items-center justify-between mb-2">
+                  <div>
+                    <div className="text-xs font-black text-white">{mat.name}</div>
+                    <div className="text-[11px] text-slate-400">Stock : <b className="text-sky-300">{stock.toFixed(1)} kg</b> • {mat.costPerKg} $/kg</div>
                   </div>
-                  <p className="text-[11px] text-slate-400 mt-1">{m.desc}</p>
-                  <div className="mt-3 grid grid-cols-3 gap-1.5 text-center font-mono text-[10px]">
-                    <div className="bg-slate-900 rounded-lg p-1.5"><div className="text-slate-500">Détect.</div><div className="text-cyan-300 font-black">{Math.round(m.detectionRate * 100)}%</div></div>
-                    <div className="bg-slate-900 rounded-lg p-1.5"><div className="text-slate-500">Portée</div><div className="text-white font-black">{m.maxMeasurablePrecision}</div></div>
-                    <div className="bg-slate-900 rounded-lg p-1.5"><div className="text-slate-500">Procédé</div><div className="text-emerald-300 font-black">+{m.processFeedbackBonus}</div></div>
-                  </div>
-                </div>
-                <div className="mt-4">
-                  {owned ? (
-                    <div className="w-full py-2 text-center rounded-xl bg-emerald-500/15 text-emerald-300 text-xs font-black">Opérationnel en Laboratoire</div>
-                  ) : locked ? (
-                    <div className="w-full py-2 px-3 rounded-xl bg-slate-900 border border-slate-800 text-amber-300 text-[11px] font-bold flex items-center justify-center gap-1.5">
-                      <Lock className="w-3.5 h-3.5" /> Tech requise : {reqTechObj?.name}
+                  {unlocked ? (
+                    <div className="flex gap-1.5">
+                      <button
+                        onClick={() => {
+                          if (money < cost10) return addToast('Fonds insuffisants.', 'error');
+                          adjustMoney(-cost10);
+                          setMaterialStock(prev => ({ ...prev, [mat.id]: (prev[mat.id] || 0) + 10 }));
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-black text-emerald-300"
+                      >
+                        +10kg ({formatMoney(cost10)})
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (money < cost50) return addToast('Fonds insuffisants.', 'error');
+                          adjustMoney(-cost50);
+                          setMaterialStock(prev => ({ ...prev, [mat.id]: (prev[mat.id] || 0) + 50 }));
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-xs font-black text-white"
+                      >
+                        +50kg ({formatMoney(cost50)})
+                      </button>
                     </div>
                   ) : (
-                    <button
-                      onClick={() => handleBuyMetrology(m.id)}
-                      disabled={!canBuy}
-                      className={`w-full py-2.5 rounded-xl text-xs font-black flex items-center justify-between px-4 transition ${canBuy ? 'bg-cyan-600 hover:bg-cyan-500 text-white' : 'bg-slate-900 text-slate-600 cursor-not-allowed'}`}
-                    >
-                      <span>Acquérir</span>
-                      <span className="font-mono">{formatMoney(m.cost)}</span>
-                    </button>
+                    <span className="text-[10px] text-amber-400 font-bold">🔒 R&amp;D Matériaux</span>
                   )}
                 </div>
               </div>
@@ -3023,565 +1907,1278 @@ export default function App() {
         </div>
       </div>
 
-      {/* Équipements de Support & Automatisation + Locaux */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div className="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl">
-          <h2 className="text-lg font-black text-white flex items-center gap-2 mb-1">
-            <Zap className="w-5 h-5 text-amber-400" /> Équipements de Support & Automatisation
-          </h2>
-          <p className="text-xs text-slate-400 mb-4">Améliorent les temps de cycle, la stabilité de coupe et réduisent les coûts d'exploitation.</p>
+      {/* LOTS PRODUITS FINIS & EXPÉDITIONS */}
+      <div className="lg:col-span-7 bg-slate-900/95 border border-slate-800 rounded-2xl p-4 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-base font-black text-white">Lots Produits Finis &amp; Ventes</h2>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setAutoSell(v => !v)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-black border ${autoSell ? 'bg-emerald-600 border-emerald-400 text-white' : 'bg-slate-800 border-slate-700 text-slate-300'}`}
+            >
+              Vente Auto : {autoSell ? 'ON' : 'OFF'}
+            </button>
+            <button
+              onClick={handleSellAllConforming}
+              className="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-black"
+            >
+              Tout Expédier
+            </button>
+          </div>
+        </div>
 
-          <div className="space-y-3">
-            {SUPPORT_CATALOG.map(s => {
-              const owned = game.support.includes(s.id);
-              const locked = s.reqTech && !game.unlockedTechs.includes(s.reqTech);
-              const reqTechObj = locked ? TECH_TREE.find(t => t.id === s.reqTech) : null;
-              const canBuy = !owned && !locked && game.money >= s.cost;
+        {partLots.length === 0 ? (
+          <div className="text-center py-12 text-xs text-slate-400 bg-slate-950/60 rounded-2xl border border-slate-800">
+            Aucun lot en stock. Usinez des pièces manuellement ou lancez vos machines !
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {partLots.map(lot => {
+              const part = PARTS_CATALOG.find(p => p.id === lot.partId);
+              const unitVal = (part?.sellPrice || 10) * (1 + modifiers.priceBonus + certBonus) * (lot.quality / 85);
               return (
-                <div key={s.id} className={`rounded-2xl p-4 border flex flex-wrap items-center justify-between gap-3 ${owned ? 'bg-emerald-950/20 border-emerald-500/40' : 'bg-slate-950 border-slate-800'}`}>
-                  <div className="flex-1 min-w-[200px]">
-                    <div className="font-black text-white text-sm">{s.name}</div>
-                    <div className="text-[11px] text-slate-400 mt-0.5">{s.desc}</div>
+                <div key={lot.id} className="p-3 rounded-xl bg-slate-950/90 border border-slate-800 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <PartIllustration partId={lot.partId} />
+                    <div>
+                      <div className="text-xs font-black text-white">
+                        {part?.name} <span className="text-sky-400">x{lot.qty}</span>
+                      </div>
+                      <div className="text-[11px] text-slate-400 flex items-center gap-2">
+                        <span>Qualité : {lot.quality}/100</span>
+                        {!lot.inspected ? (
+                          <span className="text-amber-400 font-bold">• Non contrôlé</span>
+                        ) : lot.isConforming ? (
+                          <span className="text-emerald-400 font-bold">• Conforme</span>
+                        ) : (
+                          <span className="text-rose-400 font-bold">• Rebut</span>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                  {owned ? (
-                    <span className="px-3 py-1.5 rounded-xl bg-emerald-500/15 text-emerald-300 text-xs font-black flex items-center gap-1"><Check className="w-4 h-4" /> Actif</span>
-                  ) : locked ? (
-                    <span className="px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-amber-300 text-[11px] font-bold flex items-center gap-1"><Lock className="w-3.5 h-3.5" /> {reqTechObj?.name}</span>
-                  ) : (
-                    <button
-                      onClick={() => handleBuySupport(s.id)}
-                      disabled={!canBuy}
-                      className={`px-4 py-2 rounded-xl text-xs font-black font-mono transition ${canBuy ? 'bg-amber-500 hover:bg-amber-400 text-slate-950' : 'bg-slate-900 text-slate-600 cursor-not-allowed'}`}
-                    >
-                      {formatMoney(s.cost)}
-                    </button>
-                  )}
+                  <button
+                    onClick={() => handleSellLot(lot.id)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-black ${
+                      !lot.inspected
+                        ? 'bg-amber-600/30 border border-amber-500/50 text-amber-300'
+                        : lot.isConforming
+                        ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                        : 'bg-slate-700 hover:bg-slate-600 text-slate-200'
+                    }`}
+                  >
+                    {!lot.inspected ? 'Contrôle requis' : lot.isConforming ? `Vendre (${formatMoney(unitVal * lot.qty)})` : 'Recycler'}
+                  </button>
                 </div>
               );
             })}
           </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const renderMetrology = () => {
+    const uninspectedCount = partLots.filter(l => !l.inspected).reduce((a, b) => a + b.qty, 0);
+    return (
+      <div className="space-y-4">
+        <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-base font-black text-white flex items-center gap-2">
+              <Gauge className="w-5 h-5 text-emerald-400" /> Laboratoire de Métrologie &amp; Certifications
+            </h2>
+            <p className="text-xs text-slate-400">Contrôlez la conformité dimensionnelle et décrochez les certifications aéronautiques.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setAutoInspect(v => !v)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-black border ${autoInspect ? 'bg-emerald-600 border-emerald-400 text-white' : 'bg-slate-800 border-slate-700 text-slate-300'}`}
+            >
+              Contrôle Auto : {autoInspect ? 'ACTIF' : 'MANUEL'}
+            </button>
+            {uninspectedCount > 0 && (
+              <button onClick={handleInspectAll} className="px-3 py-1.5 rounded-xl bg-sky-600 text-white text-xs font-black">
+                Contrôler ({uninspectedCount} pcs)
+              </button>
+            )}
+          </div>
         </div>
 
-        {/* Agrandir les Murs & Revêtements de sol */}
-        <div className="lg:col-span-5 space-y-5">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl">
-            <h3 className="text-base font-black text-white flex items-center gap-2 mb-3">
-              <Factory className="w-5 h-5 text-cyan-400" /> Agrandir les Murs de l'Usine
-            </h3>
-            <div className="space-y-2">
-              {ATELIER_UPGRADES.sizes.map(s => {
-                const isCur = s.level === game.atelier.sizeLevel;
-                const isNext = s.level === game.atelier.sizeLevel + 1;
-                const done = s.level < game.atelier.sizeLevel;
-                const canAff = game.money >= s.cost;
-                if (done) return <div key={s.level} className="p-3 rounded-xl bg-emerald-500/10 text-emerald-400 text-xs font-bold flex justify-between"><span>{s.name} ({s.slots} îlots)</span><Check className="w-4 h-4" /></div>;
-                if (isCur) return <div key={s.level} className="p-3 rounded-xl bg-slate-800 border border-cyan-500/40 text-white text-xs font-bold flex justify-between"><span>{s.name} ({s.slots} îlots)</span><span className="text-cyan-400">Actuel</span></div>;
-                if (isNext) return (
-                  <button
-                    key={s.level}
-                    disabled={!canAff}
-                    onClick={() => {
-                      if (!canAff) return;
-                      setGame(prev => ({ ...prev, money: prev.money - s.cost, atelier: { ...prev.atelier, sizeLevel: s.level } }));
-                      showMsg(`🏗️ Usine agrandie : ${s.name} (${s.slots} îlots) !`, "success");
-                    }}
-                    className={`w-full p-3 rounded-xl text-xs font-black flex justify-between items-center transition ${canAff ? 'bg-cyan-600 hover:bg-cyan-500 text-white' : 'bg-slate-950 text-slate-500 border border-slate-800 cursor-not-allowed'}`}
-                  >
-                    <span>Agrandir : {s.name} ({s.slots} îlots)</span>
-                    <span className="font-mono">{formatMoney(s.cost)}</span>
-                  </button>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+          {METROLOGY_CATALOG.map(m => {
+            const isOwned = metrologyOwned.includes(m.id);
+            const techOk = !m.reqTech || unlockedTechs.includes(m.reqTech);
+            return (
+              <div key={m.id} className={`rounded-2xl border p-3.5 flex flex-col justify-between ${activeMetroId === m.id ? 'bg-emerald-950/20 border-emerald-500' : 'bg-slate-900/90 border-slate-800'}`}>
+                <div>
+                  <div className="text-xs font-black text-white mb-1">{m.name}</div>
+                  <p className="text-[11px] text-slate-400 mb-2">{m.desc}</p>
+                  <div className="text-[11px] text-emerald-300 font-bold">Détection : {Math.round(m.detectRate * 100)}%</div>
+                </div>
+                <div className="mt-3">
+                  {isOwned ? (
+                    <button
+                      onClick={() => setActiveMetroId(m.id)}
+                      className={`w-full py-2 rounded-xl text-xs font-black ${activeMetroId === m.id ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-300'}`}
+                    >
+                      {activeMetroId === m.id ? '✓ Équipement Actif' : 'Activer ce poste'}
+                    </button>
+                  ) : !techOk ? (
+                    <div className="text-[11px] text-amber-400 font-bold text-center py-1.5 bg-amber-950/30 rounded-xl">🔒 R&amp;D Métrologie</div>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        if (money < m.cost) return addToast('Fonds insuffisants.', 'error');
+                        adjustMoney(-m.cost);
+                        setMetrologyOwned(prev => [...prev, m.id]);
+                        setActiveMetroId(m.id);
+                        addToast(`${m.name} installé au labo !`, 'success');
+                      }}
+                      className="w-full py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-black"
+                    >
+                      Acheter ({formatMoney(m.cost)})
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* CERTIFICATIONS INDUSTRIELLES */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {CERTIFICATIONS_CATALOG.map(c => {
+            const metroIdx = METROLOGY_CATALOG.findIndex(m => m.id === activeMetroId);
+            const reqIdx = METROLOGY_CATALOG.findIndex(m => m.id === c.reqMetro);
+            const unlocked = reputation >= c.reqRep && metroIdx >= reqIdx;
+            return (
+              <div key={c.id} className={`rounded-2xl border p-4 ${unlocked ? 'bg-amber-950/20 border-amber-500/60' : 'bg-slate-900/80 border-slate-800'}`}>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm font-black text-white flex items-center gap-1.5">
+                    <Award className="w-4 h-4 text-amber-400" /> {c.name}
+                  </span>
+                  <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${unlocked ? 'bg-emerald-900 text-emerald-300' : 'bg-slate-800 text-slate-400'}`}>
+                    {unlocked ? 'CERTIFIÉ' : `Req. Rép ${c.reqRep}`}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400">{c.desc}</p>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  const renderContracts = () => (
+    <div className="space-y-4">
+      <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-base font-black text-white flex items-center gap-2">
+            <FileSpreadsheet className="w-5 h-5 text-sky-400" /> Appels d’Offres &amp; Réputation Industrielle
+          </h2>
+          <p className="text-xs text-slate-400">Réputation globale : <b className="text-amber-400">{reputation}/100</b> • Bonus certifications : <b className="text-emerald-400">+{Math.round(certBonus * 100)}%</b></p>
+        </div>
+        <div className="flex flex-wrap gap-2 text-[11px]">
+          {Object.entries(repMetrics).map(([k, v]) => (
+            <span key={k} className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-slate-300 font-bold capitalize">
+              {k} : <b className="text-sky-400">{v}%</b>
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {contracts.map(ctr => {
+          const part = PARTS_CATALOG.find(p => p.id === ctr.partId);
+          const readyQty = partLots
+            .filter(l => l.partId === ctr.partId && l.inspected && l.isConforming && l.quality >= ctr.minQuality)
+            .reduce((a, b) => a + b.qty, 0);
+          const winProb = Math.round(Math.max(25, Math.min(100, (1.35 - ctr.bidMult * 0.35 + reputation / 250) * 100)));
+
+          return (
+            <div key={ctr.id} className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between space-y-3">
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-black text-sky-400">{ctr.client}</span>
+                  <span className="text-[10px] font-black px-2 py-0.5 rounded bg-slate-800 text-amber-300">Palier {ctr.tier}</span>
+                </div>
+                <div className="flex items-center gap-2.5 bg-slate-950 p-2.5 rounded-xl border border-slate-800 mb-3">
+                  <PartIllustration partId={ctr.partId} />
+                  <div>
+                    <div className="text-xs font-black text-white">{part?.name}</div>
+                    <div className="text-[11px] text-slate-400">
+                      Quantité : <b className={readyQty >= ctr.qty ? 'text-emerald-400' : 'text-amber-300'}>{readyQty}/{ctr.qty}</b> • Qual. ≥ {ctr.minQuality}
+                    </div>
+                  </div>
+                </div>
+
+                {ctr.tier >= 2 && (
+                  <div className="bg-slate-950/70 p-2.5 rounded-xl border border-slate-800 text-xs space-y-1">
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Marge proposée : <b>{Math.round(ctr.bidMult * 100)}%</b></span>
+                      <span className="text-emerald-400 font-bold">Succès : {winProb}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.85"
+                      max="1.20"
+                      step="0.05"
+                      value={ctr.bidMult}
+                      onChange={e =>
+                        setContracts(prev => prev.map(c => (c.id === ctr.id ? { ...c, bidMult: parseFloat(e.target.value) } : c)))
+                      }
+                      className="w-full accent-sky-500"
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex justify-between text-xs font-black">
+                  <span className="text-emerald-400">{formatMoney(Math.round(ctr.baseReward * ctr.bidMult))}</span>
+                  <span className="text-purple-300">+{ctr.rpReward} RP</span>
+                </div>
+                <button
+                  onClick={() => handleDeliverContract(ctr)}
+                  disabled={readyQty < ctr.qty}
+                  className={`w-full py-2.5 rounded-xl text-xs font-black ${
+                    readyQty >= ctr.qty ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow' : 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                  }`}
+                >
+                  {readyQty >= ctr.qty ? 'Livrer la Commande' : `Manque ${ctr.qty - readyQty} pièces`}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  // --- RENDU ARBRE R&D (CONSTELLATION PC + ONGLETS MOBILE) ---
+  const renderTechTree = () => {
+    const branches = ['Production', 'Métrologie', 'Qualité', 'Méthodes', 'Automatisation', 'Matériaux', 'RH'];
+    const branchColors = {
+      Production: '#38bdf8',
+      Métrologie: '#34d399',
+      Qualité: '#fbbf24',
+      Méthodes: '#f472b6',
+      Automatisation: '#a78bfa',
+      Matériaux: '#fb923c',
+      RH: '#f43f5e'
+    };
+
+    const selectedNode = TECH_TREE_CATALOG.find(t => t.id === selectedTechId) || TECH_TREE_CATALOG[1];
+    const isSelUnlocked = unlockedTechs.includes(selectedNode.id);
+    const mainReqMet = !selectedNode.req || unlockedTechs.includes(selectedNode.req);
+    const crossReqMet = !selectedNode.crossReq || unlockedTechs.includes(selectedNode.crossReq);
+    const isSelAvailable = !isSelUnlocked && mainReqMet && crossReqMet;
+    const reqNode = selectedNode.req ? TECH_TREE_CATALOG.find(t => t.id === selectedNode.req) : null;
+    const crossReqNode = selectedNode.crossReq ? TECH_TREE_CATALOG.find(t => t.id === selectedNode.crossReq) : null;
+
+    const crossLinks = TECH_TREE_CATALOG.filter(t => t.crossReq).map(target => {
+      const source = TECH_TREE_CATALOG.find(s => s.id === target.crossReq);
+      if (!source) return null;
+      const bothUnlocked = unlockedTechs.includes(source.id) && unlockedTechs.includes(target.id);
+      const sourceUnlocked = unlockedTechs.includes(source.id);
+      const isHoveredLink = hoveredTechId === source.id || hoveredTechId === target.id || selectedTechId === source.id || selectedTechId === target.id;
+      const midX = (source.x + target.x) / 2 + (500 - (source.x + target.x) / 2) * 0.14;
+      const midY = (source.y + target.y) / 2 + (280 - (source.y + target.y) / 2) * 0.14;
+      return { source, target, bothUnlocked, sourceUnlocked, isHoveredLink, midX, midY };
+    }).filter(Boolean);
+
+    return (
+      <div className="space-y-4">
+        <div className="bg-slate-800/90 border border-slate-700 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-black text-white flex items-center gap-2">
+              <Cpu className="w-5 h-5 text-cyan-400" /> Constellation Technologique R&amp;D (7 Branches Interconnectées)
+            </h2>
+            <p className="text-xs text-slate-400">
+              Les branches communiquent entre elles par des <span className="text-cyan-300 font-bold">passerelles industrielles</span> (ex: 5 Axes ↔ MMT 3D, Titane ↔ 5 Axes, Robotique ↔ Scanner 3D).
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="bg-purple-950/60 border border-purple-500/40 px-3 py-1.5 rounded-xl flex items-center gap-2">
+              <Lightbulb className="w-4 h-4 text-purple-300" />
+              <span className="text-xs font-black text-purple-200">{Math.floor(researchPoints)} Points R&amp;D (RP)</span>
+            </div>
+            <button
+              onClick={handleBuyResearchPoint}
+              className="bg-purple-600 hover:bg-purple-500 text-white text-xs font-black px-3 py-2 rounded-xl shadow-lg transition-all"
+            >
+              Étude R&amp;D (+10 RP) • {formatMoney(rpStudyCost)}
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+          {/* VUE CONSTELLATION PC */}
+          <div className="hidden md:block xl:col-span-8 bg-[#050811] border border-slate-800 rounded-2xl p-3 relative overflow-hidden shadow-2xl">
+            <svg viewBox="0 0 1000 560" className="w-full h-auto select-none">
+              <defs>
+                <radialGradient id="constellationBg" cx="50%" cy="50%" r="55%">
+                  <stop offset="0%" stopColor="#0f1e3a" stopOpacity="0.9" />
+                  <stop offset="65%" stopColor="#070c1a" stopOpacity="0.95" />
+                  <stop offset="100%" stopColor="#03050a" stopOpacity="1" />
+                </radialGradient>
+                <filter id="nodeGlow" filterUnits="userSpaceOnUse" x="0" y="0" width="1000" height="560">
+                  <feGaussianBlur stdDeviation="4" result="blur" />
+                  <feMerge>
+                    <feMergeNode in="blur" />
+                    <feMergeNode in="SourceGraphic" />
+                  </feMerge>
+                </filter>
+              </defs>
+
+              <rect x="0" y="0" width="1000" height="560" rx="16" fill="url(#constellationBg)" />
+              <circle cx="500" cy="280" r="95" fill="none" stroke="#1e293b" strokeWidth="1" strokeDasharray="4 6" />
+              <circle cx="500" cy="280" r="195" fill="none" stroke="#1e293b" strokeWidth="1" strokeDasharray="4 6" />
+              <circle cx="500" cy="280" r="295" fill="none" stroke="#1e293b" strokeWidth="1" strokeDasharray="4 6" />
+
+              {[
+                [70, 40], [180, 35], [340, 50], [660, 48], [840, 55], [930, 120],
+                [55, 210], [945, 220], [65, 420], [925, 410], [210, 525], [790, 520], [430, 535], [580, 530]
+              ].map(([sx, sy], idx) => (
+                <circle key={idx} cx={sx} cy={sy} r={idx % 3 === 0 ? 1.8 : 1.1} fill="#64748b" opacity="0.55" />
+              ))}
+
+              <text x="155" y="28" fill="#38bdf8" fontSize="11" fontWeight="900" textAnchor="middle" letterSpacing="1.5">PRODUCTION</text>
+              <text x="500" y="14" fill="#34d399" fontSize="11" fontWeight="900" textAnchor="middle" letterSpacing="1.5">MÉTROLOGIE</text>
+              <text x="775" y="95" fill="#fbbf24" fontSize="11" fontWeight="900" textAnchor="middle" letterSpacing="1.5">QUALITÉ</text>
+              <text x="885" y="262" fill="#f472b6" fontSize="11" fontWeight="900" textAnchor="middle" letterSpacing="1.5">MÉTHODES</text>
+              <text x="820" y="495" fill="#a78bfa" fontSize="11" fontWeight="900" textAnchor="middle" letterSpacing="1.5">AUTOMATISATION</text>
+              <text x="160" y="542" fill="#fb923c" fontSize="11" fontWeight="900" textAnchor="middle" letterSpacing="1.5">MATÉRIAUX</text>
+              <text x="88" y="255" fill="#f43f5e" fontSize="11" fontWeight="900" textAnchor="middle" letterSpacing="1.5">RH &amp; ÉLITE</text>
+
+              {TECH_TREE_CATALOG.filter(n => !n.req).map(rootNode => {
+                const col = branchColors[rootNode.branch] || '#38bdf8';
+                return (
+                  <line
+                    key={`core_${rootNode.id}`}
+                    x1="500"
+                    y1="280"
+                    x2={rootNode.x}
+                    y2={rootNode.y}
+                    stroke={col}
+                    strokeWidth="2.4"
+                    strokeOpacity="0.65"
+                  />
                 );
-                return <div key={s.level} className="p-3 rounded-xl bg-slate-950/60 text-slate-600 text-xs font-bold flex justify-between"><span>{s.name} ({s.slots} îlots)</span><Lock className="w-3.5 h-3.5" /></div>;
+              })}
+
+              {crossLinks.map(({ source, target, bothUnlocked, sourceUnlocked, isHoveredLink, midX, midY }) => {
+                const strokeCol = bothUnlocked ? '#38bdf8' : sourceUnlocked ? '#eab308' : '#334155';
+                return (
+                  <path
+                    key={`cross_${source.id}_${target.id}`}
+                    d={`M ${source.x} ${source.y} Q ${midX} ${midY} ${target.x} ${target.y}`}
+                    fill="none"
+                    stroke={strokeCol}
+                    strokeWidth={isHoveredLink ? 3 : bothUnlocked ? 2.2 : 1.5}
+                    strokeDasharray={bothUnlocked ? 'none' : '5 5'}
+                    strokeOpacity={isHoveredLink ? 1 : bothUnlocked ? 0.85 : 0.45}
+                    filter={bothUnlocked || isHoveredLink ? 'url(#nodeGlow)' : undefined}
+                  />
+                );
+              })}
+
+              {TECH_TREE_CATALOG.filter(n => n.req).map(node => {
+                const parent = TECH_TREE_CATALOG.find(p => p.id === node.req);
+                if (!parent) return null;
+                const unlocked = unlockedTechs.includes(node.id);
+                const parentUnlocked = unlockedTechs.includes(parent.id);
+                const col = branchColors[node.branch] || '#38bdf8';
+                const isLit = hoveredTechId === node.id || hoveredTechId === parent.id || selectedTechId === node.id;
+                return (
+                  <line
+                    key={`link_${parent.id}_${node.id}`}
+                    x1={parent.x}
+                    y1={parent.y}
+                    x2={node.x}
+                    y2={node.y}
+                    stroke={unlocked ? col : parentUnlocked ? '#eab308' : '#1e293b'}
+                    strokeWidth={isLit ? 4 : unlocked ? 3 : 2}
+                    strokeOpacity={unlocked ? 0.95 : parentUnlocked ? 0.7 : 0.45}
+                    filter={unlocked || isLit ? 'url(#nodeGlow)' : undefined}
+                  />
+                );
+              })}
+
+              <g transform="translate(500, 280)">
+                <circle r="30" fill="#0f172a" stroke="#38bdf8" strokeWidth="2.5" filter="url(#nodeGlow)" />
+                <circle r="22" fill="#0284c7" fillOpacity="0.25" stroke="#7dd3fc" strokeWidth="1" />
+                <text y="-2" fill="#e0f2fe" fontSize="9" fontWeight="900" textAnchor="middle">CNC</text>
+                <text y="9" fill="#38bdf8" fontSize="8" fontWeight="800" textAnchor="middle">R&amp;D</text>
+              </g>
+
+              {TECH_TREE_CATALOG.map(node => {
+                const unlocked = unlockedTechs.includes(node.id);
+                const reqOk = (!node.req || unlockedTechs.includes(node.req)) && (!node.crossReq || unlockedTechs.includes(node.crossReq));
+                const available = !unlocked && reqOk;
+                const isSelected = selectedTechId === node.id;
+                const isHovered = hoveredTechId === node.id;
+                const col = branchColors[node.branch] || '#38bdf8';
+                const strokeColor = unlocked ? col : available ? '#facc15' : '#475569';
+
+                return (
+                  <g
+                    key={node.id}
+                    transform={`translate(${node.x}, ${node.y})`}
+                    onClick={() => setSelectedTechId(node.id)}
+                    onMouseEnter={() => setHoveredTechId(node.id)}
+                    onMouseLeave={() => setHoveredTechId(null)}
+                    className="cursor-pointer"
+                  >
+                    {(isSelected || isHovered || unlocked) && (
+                      <circle
+                        r={isSelected ? 27 : 23}
+                        fill="none"
+                        stroke={strokeColor}
+                        strokeWidth={isSelected ? 2.5 : 1.5}
+                        strokeOpacity={isSelected ? 0.95 : 0.45}
+                        filter="url(#nodeGlow)"
+                      />
+                    )}
+                    {available && (
+                      <circle r="24" fill="none" stroke="#facc15" strokeWidth="1.5" strokeDasharray="3 3" opacity="0.85" />
+                    )}
+                    <circle
+                      r="18"
+                      fill={unlocked ? '#0b192c' : available ? '#1c1917' : '#090d16'}
+                      stroke={strokeColor}
+                      strokeWidth={isSelected ? 3 : 2.2}
+                    />
+                    <g transform="translate(-18, -18)">
+                      <TechNodeGlyph node={node} unlocked={unlocked} available={available} />
+                    </g>
+                    {unlocked && (
+                      <g transform="translate(12, -12)">
+                        <circle r="6" fill="#10b981" stroke="#064e3b" strokeWidth="1.2" />
+                        <path d="M-2.5 0 L-0.8 2 L2.8 -2" stroke="#ffffff" strokeWidth="1.6" fill="none" strokeLinecap="round" />
+                      </g>
+                    )}
+                    {node.crossReq && !unlocked && (
+                      <g transform="translate(-12, -12)">
+                        <circle r="5.5" fill="#0f172a" stroke="#38bdf8" strokeWidth="1.2" />
+                        <circle r="2" fill="#38bdf8" />
+                      </g>
+                    )}
+                  </g>
+                );
+              })}
+            </svg>
+          </div>
+
+          {/* VUE MOBILE */}
+          <div className="md:hidden bg-slate-900/95 border border-slate-800 rounded-2xl p-3 space-y-3">
+            <div className="flex gap-1.5 overflow-x-auto pb-1">
+              {branches.map(b => (
+                <button
+                  key={b}
+                  onClick={() => setMobileTechBranch(b)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-black whitespace-nowrap border ${mobileTechBranch === b ? 'bg-sky-600 border-sky-400 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}
+                >
+                  {b}
+                </button>
+              ))}
+            </div>
+            <div className="space-y-2">
+              {TECH_TREE_CATALOG.filter(t => t.branch === mobileTechBranch).map(node => {
+                const unlocked = unlockedTechs.includes(node.id);
+                const reqOk = (!node.req || unlockedTechs.includes(node.req)) && (!node.crossReq || unlockedTechs.includes(node.crossReq));
+                const available = !unlocked && reqOk;
+                return (
+                  <div
+                    key={node.id}
+                    onClick={() => setSelectedTechId(node.id)}
+                    className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${selectedTechId === node.id ? 'border-sky-400 bg-slate-800' : 'border-slate-800 bg-slate-950/80'}`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <TechNodeGlyph node={node} unlocked={unlocked} available={available} />
+                      <div>
+                        <div className="text-xs font-black text-white">{node.name}</div>
+                        <div className="text-[11px] text-slate-400">{node.effect}</div>
+                      </div>
+                    </div>
+                    <span className={`text-[10px] font-black px-2 py-1 rounded ${unlocked ? 'bg-emerald-900/60 text-emerald-300' : available ? 'bg-amber-900/60 text-amber-300' : 'bg-slate-800 text-slate-500'}`}>
+                      {unlocked ? 'ACQUIS' : available ? 'DISPO' : 'VERROUILLÉ'}
+                    </span>
+                  </div>
+                );
               })}
             </div>
           </div>
 
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl">
-            <h3 className="text-base font-black text-white flex items-center gap-2 mb-3">
-              <Sliders className="w-5 h-5 text-emerald-400" /> Sols & Stabilité Vibratoire
-            </h3>
-            <div className="space-y-2">
-              {ATELIER_UPGRADES.floors.map((f, idx) => {
-                const curIdx = ATELIER_UPGRADES.floors.findIndex(x => x.id === game.atelier.floor);
-                if (idx < curIdx) return <div key={f.id} className="p-3 rounded-xl bg-emerald-500/10 text-emerald-400 text-xs font-bold flex justify-between"><span>{f.name}</span><Check className="w-4 h-4" /></div>;
-                if (idx === curIdx) return <div key={f.id} className="p-3 rounded-xl bg-slate-800 border border-emerald-500/40 text-white text-xs font-bold flex justify-between"><span>{f.name}</span><span className="text-emerald-400">Installé</span></div>;
-                if (idx === curIdx + 1) {
-                  const canAff = game.money >= f.cost;
+          {/* PANNEAU D'INSPECTION */}
+          <div className="xl:col-span-4 bg-slate-900/95 border border-slate-700 rounded-2xl p-4 flex flex-col justify-between">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span
+                  className="text-[11px] font-black uppercase px-2.5 py-0.5 rounded-full border"
+                  style={{
+                    color: branchColors[selectedNode.branch] || '#38bdf8',
+                    borderColor: `${branchColors[selectedNode.branch] || '#38bdf8'}66`,
+                    backgroundColor: '#0f172a'
+                  }}
+                >
+                  Branche {selectedNode.branch}
+                </span>
+                <span className={`text-xs font-black px-2.5 py-0.5 rounded-full ${isSelUnlocked ? 'bg-emerald-950 text-emerald-300 border border-emerald-700' : isSelAvailable ? 'bg-amber-950 text-amber-300 border border-amber-700' : 'bg-slate-800 text-slate-400'}`}>
+                  {isSelUnlocked ? 'Technologie Acquise' : isSelAvailable ? 'Prête à débloquer' : 'Verrouillée'}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-3 bg-slate-950/90 border border-slate-800 rounded-xl p-3">
+                <div className="w-12 h-12 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-center shrink-0">
+                  <TechNodeGlyph node={selectedNode} unlocked={isSelUnlocked} available={isSelAvailable} />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-white">{selectedNode.name}</h3>
+                  <p className="text-xs text-cyan-300 font-semibold">{selectedNode.unlocks}</p>
+                </div>
+              </div>
+
+              <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3 space-y-2 text-xs">
+                <div className="text-slate-400 font-bold uppercase text-[10px]">Effet Industriel</div>
+                <p className="text-slate-200 font-semibold">{selectedNode.effect}</p>
+              </div>
+
+              {(reqNode || crossReqNode) && (
+                <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3 space-y-2 text-xs">
+                  <div className="text-slate-400 font-bold uppercase text-[10px]">Connexions &amp; Prérequis</div>
+                  {reqNode && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-300">Branche {reqNode.branch} : <b>{reqNode.name}</b></span>
+                      <span className={mainReqMet ? 'text-emerald-400 font-black' : 'text-rose-400 font-black'}>
+                        {mainReqMet ? '✓ Validé' : '✗ Requis'}
+                      </span>
+                    </div>
+                  )}
+                  {crossReqNode && (
+                    <div className="flex items-center justify-between pt-1 border-t border-slate-800/80">
+                      <span className="text-cyan-300">Passerelle {crossReqNode.branch} : <b>{crossReqNode.name}</b></span>
+                      <span className={crossReqMet ? 'text-emerald-400 font-black' : 'text-amber-400 font-black'}>
+                        {crossReqMet ? '✓ Relié' : '⚡ Requis'}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {!isSelUnlocked && (
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="bg-slate-950 border border-slate-800 rounded-xl p-2.5">
+                    <span className="text-slate-400 block text-[10px]">Coût Budget</span>
+                    <span className={`font-black text-sm ${money >= selectedNode.moneyCost ? 'text-emerald-400' : 'text-rose-400'}`}>
+                      {formatMoney(selectedNode.moneyCost)}
+                    </span>
+                  </div>
+                  <div className="bg-slate-950 border border-slate-800 rounded-xl p-2.5">
+                    <span className="text-slate-400 block text-[10px]">Coût Recherche</span>
+                    <span className={`font-black text-sm ${researchPoints >= selectedNode.rpCost ? 'text-purple-300' : 'text-rose-400'}`}>
+                      {selectedNode.rpCost} RP
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4">
+              {isSelUnlocked ? (
+                <div className="w-full py-2.5 rounded-xl bg-emerald-950/60 border border-emerald-700/60 text-emerald-300 text-xs font-black text-center">
+                  ✓ Compétence active dans votre usine
+                </div>
+              ) : (
+                <button
+                  onClick={() => handleUnlockTech(selectedNode)}
+                  disabled={!isSelAvailable || money < selectedNode.moneyCost || researchPoints < selectedNode.rpCost}
+                  className={`w-full py-3 rounded-xl font-black text-xs transition-all ${
+                    isSelAvailable && money >= selectedNode.moneyCost && researchPoints >= selectedNode.rpCost
+                      ? 'bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white shadow-lg'
+                      : 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                  }`}
+                >
+                  {!isSelAvailable
+                    ? 'Prérequis ou Passerelle manquante'
+                    : money < selectedNode.moneyCost || researchPoints < selectedNode.rpCost
+                    ? 'Budget ou RP insuffisant'
+                    : `Débloquer ${selectedNode.name}`}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // --- RENDU COFFRES, CARTES & GMP-DEX ---
+  const renderGacha = () => {
+    const unlockedCount = Object.values(inventory).filter(v => v && v.count > 0).length;
+    const filteredCards = EMPLOYEES_CATALOG
+      .filter(emp => {
+        const owned = inventory[emp.id];
+        if (!owned || owned.count <= 0) return false;
+        if (cardFilterRarity !== 'all' && emp.rarity !== cardFilterRarity) return false;
+        if (cardOnlyMergeable && owned.count < 3) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const oa = inventory[a.id] || { count: 0, stars: 1 };
+        const ob = inventory[b.id] || { count: 0, stars: 1 };
+        if (cardSortBy === 'rarity_desc') return RARITY_ORDER[b.rarity] - RARITY_ORDER[a.rarity];
+        if (cardSortBy === 'rarity_asc') return RARITY_ORDER[a.rarity] - RARITY_ORDER[b.rarity];
+        if (cardSortBy === 'stars') return ob.stars - oa.stars;
+        if (cardSortBy === 'bonus') return b.baseMult - a.baseMult;
+        if (cardSortBy === 'count') return ob.count - oa.count;
+        return a.name.localeCompare(b.name);
+      });
+
+    return (
+      <div className="space-y-4">
+        <div className="bg-slate-800/90 border border-slate-700 rounded-2xl p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+            <div>
+              <h2 className="text-lg font-black text-white flex items-center gap-2"><Gift className="w-5 h-5 text-amber-400" /> Recrutement RH &amp; Caisses Spécialisées</h2>
+              <p className="text-xs text-slate-400">Débloquez la branche <span className="text-rose-400 font-bold">RH</span> dans l’arbre R&amp;D pour accéder aux caisses d’élite (jusqu’à <span className="text-amber-300 font-bold">1% Secret</span>).</p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setCardSubTab('deck')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-all ${cardSubTab === 'deck' ? 'bg-sky-600 border-sky-400 text-white' : 'bg-slate-900 border-slate-700 text-slate-400'}`}
+              >
+                Mes Cartes ({filteredCards.length})
+              </button>
+              <button
+                onClick={() => setCardSubTab('dex')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-all ${cardSubTab === 'dex' ? 'bg-amber-600 border-amber-400 text-white' : 'bg-slate-900 border-slate-700 text-slate-400'}`}
+              >
+                GMP-Dex ({unlockedCount}/{EMPLOYEES_CATALOG.length})
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+            {CRATE_TIERS.map(tier => {
+              const unlocked = !tier.reqTech || unlockedTechs.includes(tier.reqTech);
+              const reqName = tier.reqTech ? TECH_TREE_CATALOG.find(t => t.id === tier.reqTech)?.name : null;
+              const price = getCrateCost(tier.id);
+              const opensCount = Number(crateOpens?.[tier.id]) || 0;
+              const canAfford = unlocked && !isOpeningCrate && money >= price;
+
+              return (
+                <div
+                  key={tier.id}
+                  className={`rounded-2xl border p-4 flex flex-col justify-between transition-all ${unlocked ? 'bg-slate-900/95 border-slate-700' : 'bg-slate-950/70 border-slate-800 opacity-80'}`}
+                >
+                  <div>
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <span className={`text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full border ${tier.badgeColor}`}>
+                        {tier.name}
+                      </span>
+                      <span className="text-[11px] text-slate-400 font-bold">Tirages : {opensCount}</span>
+                    </div>
+                    <p className="text-xs text-slate-300 font-semibold mb-3">{tier.subtitle}</p>
+
+                    <div className="flex justify-center my-2">
+                      <SupplyCrateSVG
+                        isOpening={isOpeningCrate && activeCrateTier === tier.id}
+                        rarityColor={lastCrateDrop && activeCrateTier === tier.id ? RARITY_CONFIG[lastCrateDrop.rarity].hex : tier.accent}
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-4 gap-1 text-[10px] bg-slate-950/90 border border-slate-800 rounded-xl p-2 mt-2">
+                      <div className="text-center"><span className="text-rose-400 font-black block">Secret</span><span className="text-white font-bold">{tier.weights.secret}%</span></div>
+                      <div className="text-center"><span className="text-red-400 font-black block">Myth.</span><span className="text-white font-bold">{tier.weights.mythique}%</span></div>
+                      <div className="text-center"><span className="text-amber-400 font-black block">Lég.</span><span className="text-white font-bold">{tier.weights.legendaire}%</span></div>
+                      <div className="text-center"><span className="text-purple-400 font-black block">Épique</span><span className="text-white font-bold">{tier.weights.epique}%</span></div>
+                      <div className="text-center"><span className="text-sky-400 font-black block">Rare</span><span className="text-white font-bold">{tier.weights.rare}%</span></div>
+                      <div className="text-center"><span className="text-slate-400 font-black block">Com.</span><span className="text-white font-bold">{tier.weights.commun}%</span></div>
+                      <div className="col-span-2 text-center"><span className="text-lime-400 font-black block">Malus</span><span className="text-white font-bold">{tier.weights.malus}%</span></div>
+                    </div>
+                  </div>
+
+                  <div className="mt-3">
+                    {!unlocked ? (
+                      <div className="w-full py-2 px-3 rounded-xl bg-rose-950/40 border border-rose-800/60 text-rose-300 text-xs font-bold flex items-center justify-center gap-1.5">
+                        <Lock className="w-3.5 h-3.5 shrink-0" />
+                        <span>R&amp;D RH : {reqName}</span>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => handleOpenCrate(tier.id)}
+                        disabled={!canAfford}
+                        className={`w-full py-2.5 px-3 rounded-xl font-black text-xs flex items-center justify-between transition-all ${canAfford ? 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 shadow-lg' : 'bg-slate-800 text-slate-500 cursor-not-allowed'}`}
+                      >
+                        <span>{isOpeningCrate && activeCrateTier === tier.id ? 'Recrutement...' : 'Ouvrir Caisse'}</span>
+                        <span>{formatMoney(price)}</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {lastCrateDrop && (
+            <div className={`mt-4 p-4 rounded-2xl border-2 bg-slate-950/95 flex flex-wrap items-center justify-between gap-4 shadow-xl ${RARITY_CONFIG[lastCrateDrop.rarity].border}`}>
+              <div className="flex items-center gap-3">
+                <CharacterPortrait emp={lastCrateDrop} sizeClass="w-16 h-16" />
+                <div>
+                  <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full border ${RARITY_CONFIG[lastCrateDrop.rarity].badge}`}>
+                    Nouvelle recrue : {RARITY_CONFIG[lastCrateDrop.rarity].label}
+                  </span>
+                  <h3 className="text-base font-black text-white mt-1">{lastCrateDrop.name}</h3>
+                  <p className="text-xs text-slate-400">{lastCrateDrop.role} • {lastCrateDrop.specialtyLabel || 'Polyvalent'}</p>
+                </div>
+              </div>
+              <div className="text-right text-xs">
+                <div className={`font-black ${lastCrateDrop.baseMult >= 0 ? 'text-emerald-400' : 'text-lime-400'}`}>
+                  Cadence : {lastCrateDrop.baseMult >= 0 ? `+${Math.round(lastCrateDrop.baseMult * 100)}%` : `${Math.round(lastCrateDrop.baseMult * 100)}%`}
+                </div>
+                <div className="text-slate-300 font-bold">Qualité : {lastCrateDrop.qualBonus >= 0 ? `+${lastCrateDrop.qualBonus}` : lastCrateDrop.qualBonus}</div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {cardSubTab === 'deck' ? (
+          <div className="bg-slate-800/90 border border-slate-700 rounded-2xl p-4 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { id: 'all', label: 'Toutes' },
+                  { id: 'secret', label: 'Secret' },
+                  { id: 'mythique', label: 'Mythique' },
+                  { id: 'legendaire', label: 'Légendaire' },
+                  { id: 'epique', label: 'Épique' },
+                  { id: 'rare', label: 'Rare' },
+                  { id: 'commun', label: 'Commun' },
+                  { id: 'malus', label: 'Malus' }
+                ].map(f => (
+                  <button
+                    key={f.id}
+                    onClick={() => setCardFilterRarity(f.id)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border ${cardFilterRarity === f.id ? 'bg-sky-600 border-sky-400 text-white' : 'bg-slate-900 border-slate-700 text-slate-400'}`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setCardOnlyMergeable(prev => !prev)}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border ${cardOnlyMergeable ? 'bg-emerald-600 border-emerald-400 text-white' : 'bg-slate-900 border-slate-700 text-slate-400'}`}
+                >
+                  Fusionnables (3+)
+                </button>
+                <select
+                  value={cardSortBy}
+                  onChange={e => setCardSortBy(e.target.value)}
+                  className="bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-lg px-2.5 py-1 font-bold"
+                >
+                  <option value="rarity_desc">Rareté (Décroissant)</option>
+                  <option value="rarity_asc">Rareté (Croissant)</option>
+                  <option value="stars">Étoiles ★</option>
+                  <option value="bonus">Cadence %</option>
+                  <option value="count">Doublons</option>
+                  <option value="name">Nom A→Z</option>
+                </select>
+              </div>
+            </div>
+
+            {filteredCards.length === 0 ? (
+              <div className="text-center py-8 text-xs text-slate-400">
+                Aucune carte ne correspond à ce filtre. Ouvrez une caisse ci-dessus pour recruter !
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                {filteredCards.map(emp => {
+                  const owned = inventory[emp.id] || { count: 1, stars: 1 };
+                  const rar = RARITY_CONFIG[emp.rarity] || RARITY_CONFIG.commun;
+                  const canMerge = owned.count >= 3 && owned.stars < 5;
                   return (
-                    <button
-                      key={f.id}
-                      disabled={!canAff}
-                      onClick={() => {
-                        if (!canAff) return;
-                        setGame(prev => ({ ...prev, money: prev.money - f.cost, atelier: { ...prev.atelier, floor: f.id } }));
-                        showMsg(`✨ Sol posé : ${f.name}`, "success");
-                      }}
-                      className={`w-full p-3 rounded-xl text-xs font-black flex justify-between items-center transition ${canAff ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-slate-950 text-slate-500 border border-slate-800 cursor-not-allowed'}`}
-                    >
-                      <span>{f.name}</span>
-                      <span className="font-mono">{formatMoney(f.cost)}</span>
-                    </button>
+                    <div key={emp.id} className={`bg-slate-950/90 border-2 rounded-2xl p-3 flex flex-col justify-between shadow-lg ${rar.border}`}>
+                      <div>
+                        <div className="flex items-center justify-between gap-1 mb-2">
+                          <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full border ${rar.badge}`}>{rar.label}</span>
+                          <span className="text-xs font-black text-slate-300">x{owned.count}</span>
+                        </div>
+                        <div className="flex items-center gap-2.5 my-2">
+                          <CharacterPortrait emp={emp} sizeClass="w-14 h-14" />
+                          <div className="min-w-0">
+                            <div className="text-sm font-black text-white truncate">{emp.name}</div>
+                            <div className="text-[11px] text-amber-400 font-bold">{'★'.repeat(owned.stars)}{'☆'.repeat(Math.max(0, 5 - owned.stars))}</div>
+                            <div className="text-[10px] text-slate-400 truncate">{emp.role}</div>
+                          </div>
+                        </div>
+                        <div className="bg-slate-900/90 rounded-xl p-2 text-[11px] space-y-1 border border-slate-800">
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Cadence :</span>
+                            <span className={`font-black ${emp.baseMult >= 0 ? 'text-emerald-400' : 'text-lime-400'}`}>
+                              {emp.baseMult >= 0 ? `+${Math.round(emp.baseMult * 100)}%` : `${Math.round(emp.baseMult * 100)}%`}
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Qualité :</span>
+                            <span className="text-sky-300 font-black">{emp.qualBonus >= 0 ? `+${emp.qualBonus}` : emp.qualBonus}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {canMerge && (
+                        <button
+                          onClick={() => handleMergeCard(emp.id)}
+                          className="mt-2.5 w-full py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs shadow"
+                        >
+                          Fusionner (3 → ★{owned.stars + 1})
+                        </button>
+                      )}
+                    </div>
                   );
-                }
-                return <div key={f.id} className="p-3 rounded-xl bg-slate-950/60 text-slate-600 text-xs font-bold flex justify-between"><span>{f.name}</span><Lock className="w-3.5 h-3.5" /></div>;
+                })}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="bg-slate-800/90 border border-slate-700 rounded-2xl p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-black text-white">Collection GMP-Dex ({unlockedCount} / {EMPLOYEES_CATALOG.length} découverts)</h3>
+              <div className="w-40 h-2 bg-slate-950 rounded-full overflow-hidden border border-slate-700">
+                <div className="h-full bg-amber-400" style={{ width: `${Math.round((unlockedCount / Math.max(1, EMPLOYEES_CATALOG.length)) * 100)}%` }} />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+              {EMPLOYEES_CATALOG.map(emp => {
+                const owned = inventory[emp.id];
+                const isDiscovered = owned && (owned.count > 0 || (owned.maxStars || 0) > 0);
+                const rar = RARITY_CONFIG[emp.rarity] || RARITY_CONFIG.commun;
+                return (
+                  <div
+                    key={emp.id}
+                    className={`rounded-xl border p-2.5 flex flex-col items-center text-center ${isDiscovered ? `bg-slate-950/90 ${rar.border}` : 'bg-slate-950/50 border-slate-800 opacity-60'}`}
+                  >
+                    <div className={!isDiscovered ? 'brightness-0 invert opacity-25' : ''}>
+                      <CharacterPortrait emp={emp} sizeClass="w-12 h-12" />
+                    </div>
+                    <div className="text-xs font-black text-white mt-1.5 truncate w-full">
+                      {isDiscovered ? emp.name : '???'}
+                    </div>
+                    <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full border mt-1 ${rar.badge}`}>
+                      {rar.label}
+                    </span>
+                    <div className="text-[10px] text-slate-400 mt-1">
+                      {isDiscovered ? `Max ${owned.maxStars || owned.stars || 1}★` : 'Non recruté'}
+                    </div>
+                  </div>
+                );
               })}
             </div>
           </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderMissions = () => (
+    <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4 space-y-3">
+      <h2 className="text-base font-black text-white flex items-center gap-2">
+        <Trophy className="w-5 h-5 text-amber-400" /> Objectifs &amp; Missions Industrielles
+      </h2>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {MISSIONS_CATALOG.map(m => {
+          const cur = Number(stats[m.statKey] || 0);
+          const done = cur >= m.target;
+          const claimed = claimedMissions.includes(m.id);
+          return (
+            <div key={m.id} className="p-3.5 rounded-2xl bg-slate-950/90 border border-slate-800 flex items-center justify-between gap-3">
+              <div className="space-y-1 flex-1">
+                <div className="text-xs font-black text-white">{m.title}</div>
+                <div className="text-[11px] text-slate-400">{m.desc}</div>
+                <div className="w-full h-1.5 bg-slate-900 rounded-full overflow-hidden">
+                  <div className="h-full bg-amber-400" style={{ width: `${Math.min(100, Math.round((cur / m.target) * 100))}%` }} />
+                </div>
+                <div className="text-[10px] text-slate-400 font-bold">
+                  {Math.min(cur, m.target)} / {m.target} • Récompense : {formatMoney(m.rewardMoney)} + {m.rewardRP} RP
+                </div>
+              </div>
+              {claimed ? (
+                <span className="px-3 py-1.5 rounded-xl bg-emerald-950 text-emerald-400 text-xs font-black">✓ Validée</span>
+              ) : (
+                <button
+                  disabled={!done}
+                  onClick={() => {
+                    adjustMoney(m.rewardMoney);
+                    adjustRP(m.rewardRP);
+                    setClaimedMissions(prev => [...prev, m.id]);
+                    addToast(`Mission "${m.title}" réclamée !`, 'success');
+                  }}
+                  className={`px-3 py-2 rounded-xl text-xs font-black ${
+                    done ? 'bg-amber-500 hover:bg-amber-400 text-slate-950' : 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                  }`}
+                >
+                  {done ? 'Réclamer' : 'En cours'}
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  const renderAtelier = () => (
+    <div className="space-y-4">
+      <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4 space-y-3">
+        <h2 className="text-base font-black text-white flex items-center gap-2">
+          <Building2 className="w-5 h-5 text-sky-400" /> Agrandissement des Bâtiments (jusqu’à 24 îlots)
+        </h2>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {ATELIER_UPGRADES.sizes.map(sz => {
+            const currentSlots = slots.length;
+            const isCurrent = atelier.sizeId === sz.id || currentSlots === sz.slots;
+            const isSmaller = sz.slots < currentSlots;
+            return (
+              <div key={sz.id} className={`p-3.5 rounded-2xl border ${isCurrent ? 'bg-sky-950/30 border-sky-500' : 'bg-slate-950/90 border-slate-800'}`}>
+                <div className="text-xs font-black text-white">{sz.name}</div>
+                <div className="text-[11px] text-slate-400 my-1">Capacité : <b className="text-sky-300">{sz.slots} îlots</b></div>
+                {isCurrent ? (
+                  <div className="text-xs font-black text-emerald-400 mt-2">✓ Bâtiment Actuel</div>
+                ) : isSmaller ? (
+                  <div className="text-xs font-bold text-slate-600 mt-2">Déjà dépassé</div>
+                ) : (
+                  <button
+                    onClick={() => {
+                      if (money < sz.cost) return addToast('Fonds insuffisants.', 'error');
+                      adjustMoney(-sz.cost);
+                      setAtelier(a => ({ ...a, sizeId: sz.id }));
+                      setSlots(prev => [
+                        ...prev,
+                        ...Array.from({ length: sz.slots - prev.length }, () => ({
+                          machineId: null,
+                          employeeId: null,
+                          partId: 'spacer_alu',
+                          progress: 0,
+                          status: 'EMPTY'
+                        }))
+                      ]);
+                      addToast(`Atelier agrandi à ${sz.slots} îlots !`, 'success');
+                    }}
+                    className="mt-2 w-full py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-black"
+                  >
+                    Construire ({formatMoney(sz.cost)})
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4 space-y-2.5">
+          <h3 className="text-sm font-black text-white">Revêtements de Sol Industriels</h3>
+          {ATELIER_UPGRADES.floors.map(fl => (
+            <div key={fl.id} className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
+              <div>
+                <div className="text-xs font-black text-white">{fl.name}</div>
+                <div className="text-[11px] text-slate-400">+{Math.round(fl.speedBonus * 100)}% cadence • +{fl.qualBonus} qualité</div>
+              </div>
+              {atelier.floorId === fl.id ? (
+                <span className="text-xs font-black text-emerald-400">✓ Posé</span>
+              ) : (
+                <button
+                  onClick={() => {
+                    if (money < fl.cost) return addToast('Fonds insuffisants.', 'error');
+                    adjustMoney(-fl.cost);
+                    setAtelier(a => ({ ...a, floorId: fl.id }));
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-sky-600 text-white text-xs font-black"
+                >
+                  {formatMoney(fl.cost)}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4 space-y-2.5">
+          <h3 className="text-sm font-black text-white">Logistique &amp; Infrastructures Lourde</h3>
+          {ATELIER_UPGRADES.extras.map(ex => {
+            const owned = atelier.extras.includes(ex.id);
+            return (
+              <div key={ex.id} className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-black text-white">{ex.name}</div>
+                  <div className="text-[11px] text-emerald-400 font-bold">{ex.effect}</div>
+                </div>
+                {owned ? (
+                  <span className="text-xs font-black text-emerald-400">✓ Installé</span>
+                ) : (
+                  <button
+                    onClick={() => {
+                      if (money < ex.cost) return addToast('Fonds insuffisants.', 'error');
+                      adjustMoney(-ex.cost);
+                      setAtelier(a => ({ ...a, extras: [...a.extras, ex.id] }));
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-amber-500 text-slate-950 text-xs font-black"
+                  >
+                    {formatMoney(ex.cost)}
+                  </button>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>
   );
 
-  // ==========================================================================
-  // VUE 4 : ARBRE TECHNOLOGIQUE INDUSTRIEL (6 BRANCHES)
-  // ==========================================================================
-  const renderTechTreeTab = () => {
-    const visibleBranches = selectedTechBranch === 'all'
-      ? TECH_BRANCHES
-      : TECH_BRANCHES.filter(b => b.id === selectedTechBranch);
+  const renderLeaderboard = () => (
+    <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-base font-black text-white flex items-center gap-2">
+            <Trophy className="w-5 h-5 text-amber-400" /> Classement Général GMP (Saison 2)
+          </h2>
+          <p className="text-xs text-slate-400">Connecté en tant que <b className="text-sky-400">{pseudo}</b></p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={fetchLeaderboard} className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold flex items-center gap-1.5">
+            <RefreshCw className="w-3.5 h-3.5" /> Actualiser
+          </button>
+          <button
+            onClick={() => {
+              localStorage.removeItem('cnc_pseudo');
+              setIsLoggedIn(false);
+            }}
+            className="px-3 py-1.5 rounded-xl bg-rose-950/60 border border-rose-800 text-rose-300 text-xs font-bold flex items-center gap-1.5"
+          >
+            <LogOut className="w-3.5 h-3.5" /> Déconnexion
+          </button>
+        </div>
+      </div>
 
-    return (
-      <div className="space-y-5">
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <h2 className="text-xl font-black text-white flex items-center gap-2">
-              <GitBranch className="w-5 h-5 text-cyan-400" /> Arbre Technologique Industriel ({game.unlockedTechs.length}/{TECH_TREE.length})
-            </h2>
-            <p className="text-xs text-slate-400">
-              Investissez vos bénéfices et vos <b>Points de Recherche (PR)</b> obtenus via la production, les missions et les contrats.
-            </p>
+      <div className="space-y-2">
+        {leaderboard.length === 0 ? (
+          <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300 flex justify-between">
+            <span>#1 {pseudo} (Vous)</span>
+            <span className="font-black text-emerald-400">{formatMoney(money)} • Rép {reputation}/100</span>
           </div>
-          <div className="flex flex-wrap gap-1.5">
-            <button
-              onClick={() => setSelectedTechBranch('all')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-black transition ${selectedTechBranch === 'all' ? 'bg-cyan-500 text-slate-950' : 'bg-slate-800 text-slate-300'}`}
+        ) : (
+          leaderboard.map((row, idx) => (
+            <div
+              key={`${row.pseudo}_${idx}`}
+              className={`p-3 rounded-xl border flex items-center justify-between text-xs ${
+                row.pseudo === pseudo ? 'bg-sky-950/40 border-sky-500' : 'bg-slate-950 border-slate-800'
+              }`}
             >
-              Toutes (6)
-            </button>
-            {TECH_BRANCHES.map(b => (
-              <button
-                key={b.id}
-                onClick={() => setSelectedTechBranch(b.id)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-black transition ${selectedTechBranch === b.id ? 'bg-cyan-500 text-slate-950' : 'bg-slate-800 text-slate-300'}`}
-              >
-                {b.name}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-          {visibleBranches.map(branch => {
-            const nodes = TECH_TREE.filter(t => t.branch === branch.id);
-            return (
-              <div key={branch.id} className={`bg-slate-900 border-2 ${branch.border} rounded-3xl p-4 flex flex-col gap-3 shadow-xl`}>
-                <div className={`px-3 py-2 rounded-2xl ${branch.bg} flex items-center justify-between`}>
-                  <h3 className={`font-black text-sm uppercase tracking-wider ${branch.color}`}>{branch.name}</h3>
-                  <span className="text-xs font-mono font-bold text-slate-300">
-                    {nodes.filter(n => game.unlockedTechs.includes(n.id)).length}/{nodes.length}
-                  </span>
-                </div>
-
-                <div className="space-y-3">
-                  {nodes.map((node, i) => {
-                    const acquired = game.unlockedTechs.includes(node.id);
-                    const missingPrereqs = node.prereqs.filter(p => !game.unlockedTechs.includes(p));
-                    const available = !acquired && missingPrereqs.length === 0;
-                    const canAfford = available && game.money >= node.costMoney && game.researchPoints >= node.costRP;
-
-                    return (
-                      <div key={node.id} className="relative">
-                        {i > 0 && <div className="w-0.5 h-3 bg-slate-700 mx-auto -mt-3 mb-0" />}
-                        <div className={`rounded-2xl p-3.5 border-2 transition ${
-                          acquired ? 'bg-emerald-950/30 border-emerald-500/50' :
-                          available ? 'bg-slate-950 border-cyan-500/40' :
-                          'bg-slate-950/50 border-slate-800/80 opacity-65'
-                        }`}>
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-black text-white text-sm">{node.name}</span>
-                            {acquired ? (
-                              <span className="text-[10px] font-black text-emerald-400 bg-emerald-500/15 px-2 py-0.5 rounded-full">ACQUIS ✓</span>
-                            ) : available ? (
-                              <span className="text-[10px] font-black text-cyan-300 bg-cyan-500/15 px-2 py-0.5 rounded-full">DISPONIBLE</span>
-                            ) : (
-                              <span className="text-[10px] font-black text-slate-500 flex items-center gap-1"><Lock className="w-3 h-3" /> VERROUILLÉ</span>
-                            )}
-                          </div>
-                          <p className="text-[11px] text-slate-400 mt-1">{node.desc}</p>
-                          <div className="mt-2 text-[10px] text-cyan-300 font-bold bg-slate-900 rounded-lg px-2.5 py-1 border border-slate-800">
-                            Débloque : {node.unlocks}
-                          </div>
-
-                          {!acquired && missingPrereqs.length > 0 && (
-                            <div className="mt-2 text-[10px] text-amber-300 font-bold">
-                              Prérequis : {missingPrereqs.map(p => TECH_TREE.find(x => x.id === p)?.name).join(', ')}
-                            </div>
-                          )}
-
-                          {!acquired && (
-                            <button
-                              disabled={!canAfford}
-                              onClick={() => handleUnlockTech(node.id)}
-                              className={`mt-3 w-full py-2 px-3 rounded-xl text-xs font-black flex items-center justify-between transition ${
-                                canAfford ? 'bg-gradient-to-r from-cyan-500 to-blue-600 hover:brightness-110 text-white shadow' : 'bg-slate-900 text-slate-600 cursor-not-allowed'
-                              }`}
-                            >
-                              <span>Rechercher</span>
-                              <span className="font-mono flex items-center gap-2">
-                                <span className={game.money >= node.costMoney ? 'text-emerald-200' : 'text-rose-400'}>{formatMoney(node.costMoney)}</span>
-                                <span>•</span>
-                                <span className={game.researchPoints >= node.costRP ? 'text-amber-200' : 'text-rose-400'}>{node.costRP} PR</span>
-                              </span>
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+              <div className="flex items-center gap-2.5 font-black">
+                <span className="text-amber-400 w-6">#{idx + 1}</span>
+                <span className="text-white">{row.pseudo}</span>
               </div>
-            );
-          })}
-        </div>
-      </div>
-    );
-  };
-
-  // ==========================================================================
-  // VUE 5 : APPELS D'OFFRES, CONTRATS, MISSIONS & RÉPUTATION
-  // ==========================================================================
-  const renderContractsTab = () => {
-    const acceptedContracts = game.contracts.filter(c => c.status === 'accepted');
-    const availableContracts = game.contracts.filter(c => c.status === 'available');
-
-    const missionCtx = {
-      stats: { ...game.stats, machinesInstalled: machinesInstalledCount },
-      metrology: game.metrology,
-      unlockedTechs: game.unlockedTechs,
-      certs
-    };
-
-    return (
-      <div className="space-y-6">
-        {/* Tableau Réputation & Certifications */}
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl grid grid-cols-1 lg:grid-cols-12 gap-5 items-center">
-          <div className="lg:col-span-4">
-            <h2 className="text-lg font-black text-white flex items-center gap-2">
-              <Award className="w-5 h-5 text-amber-400" /> Réputation Entreprise : {globalReputation}/100
-            </h2>
-            <p className="text-xs text-slate-400 mt-1">
-              Réussissez vos appels d'offres dans les délais pour accéder aux donneurs d'ordres Automobile, Aéronautique et Spatial.
-            </p>
-            <div className="flex flex-wrap gap-2 mt-3">
-              <span className={`px-3 py-1 rounded-xl text-xs font-black border flex items-center gap-1.5 ${certs.iso9001 ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300' : 'bg-slate-950 border-slate-800 text-slate-500'}`}>
-                <ShieldCheck className="w-4 h-4" /> ISO 9001 {certs.iso9001 ? 'CERTIFIÉ' : '(Tech + Optique + Qual≥40)'}
-              </span>
-              <span className={`px-3 py-1 rounded-xl text-xs font-black border flex items-center gap-1.5 ${certs.en9100 ? 'bg-amber-500/20 border-amber-400 text-amber-300' : 'bg-slate-950 border-slate-800 text-slate-500'}`}>
-                <ShieldCheck className="w-4 h-4" /> EN 9100 {certs.en9100 ? 'CERTIFIÉ' : '(Tech + MMT + Qual≥65)'}
-              </span>
+              <div className="flex items-center gap-4">
+                <span className="text-slate-400">{row.partsProduced || 0} pcs</span>
+                <span className="text-emerald-400 font-black">{formatMoney(row.money || 0)}</span>
+              </div>
             </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+
+  // ============================================================================
+  // 7. RENDU GLOBAL DE L'APPLICATION
+  // ============================================================================
+  const readyMissionCount = MISSIONS_CATALOG.filter(
+    m => !claimedMissions.includes(m.id) && Number(stats[m.statKey] || 0) >= m.target
+  ).length;
+
+  const tutorialSteps = [
+    {
+      title: '1. Usinage Manuel & Premiers Revenus',
+      text: 'Dans Atelier & Plan 2D, cliquez sur "USINER UNE PIÈCE" pour produire vos premières entretoises en Aluminium, puis cliquez sur "Vendre le Stock Conforme".'
+    },
+    {
+      title: '2. Parc Machines & Matières Premières',
+      text: 'Achetez un Tour Conventionnel dans Parc Machines, puis commandez des barres d’Aluminium et d’Acier dans Stocks & Ventes pour alimenter vos cycles.'
+    },
+    {
+      title: '3. Constellation R&D & Recrutement RH',
+      text: 'Ouvrez la Constellation R&D en haut à droite pour débloquer les centres 5 Axes, le Titane, la Fonderie Laser SLM-900 et les Caisses RH d’élite.'
+    },
+    {
+      title: '4. Métrologie & Appels d’Offres',
+      text: 'Contrôlez la qualité de vos pièces au laboratoire et livrez des séries aux grands groupes (Airbus, Safran, ArianeGroup) pour gagner des Points R&D.'
+    }
+  ];
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
+      {/* NOTIFICATIONS TOAST */}
+      <div className="fixed bottom-4 right-4 z-50 space-y-2 pointer-events-none">
+        {toasts.map(t => (
+          <div
+            key={t.id}
+            className={`px-4 py-2.5 rounded-xl border text-xs font-black shadow-xl ${
+              t.type === 'error'
+                ? 'bg-rose-950/95 border-rose-500 text-rose-200'
+                : t.type === 'success'
+                ? 'bg-emerald-950/95 border-emerald-500 text-emerald-200'
+                : 'bg-slate-900/95 border-sky-500 text-sky-200'
+            }`}
+          >
+            {t.text}
           </div>
+        ))}
+      </div>
 
-          <div className="lg:col-span-8 grid grid-cols-2 sm:grid-cols-5 gap-3">
-            {[
-              { label: 'Qualité', val: game.reputation.quality, color: 'bg-emerald-500' },
-              { label: 'Fiabilité', val: game.reputation.reliability, color: 'bg-cyan-500' },
-              { label: 'Innovation', val: game.reputation.innovation, color: 'bg-purple-500' },
-              { label: 'Capacité', val: game.reputation.capacity, color: 'bg-blue-500' },
-              { label: 'Délais', val: game.reputation.delivery, color: 'bg-amber-500' }
-            ].map(p => (
-              <div key={p.label} className="bg-slate-950 border border-slate-800 rounded-2xl p-3 text-center">
-                <div className="text-[10px] text-slate-400 uppercase font-black">{p.label}</div>
-                <div className="text-lg font-mono font-black text-white my-1">{Math.round(p.val)}</div>
-                <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                  <div className={`h-full ${p.color}`} style={{ width: `${clamp(p.val, 0, 100)}%` }} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
-          {/* Appels d'offres & Contrats */}
-          <div className="xl:col-span-7 space-y-5">
-            {/* Contrats en cours */}
-            {acceptedContracts.length > 0 && (
-              <div className="bg-slate-900 border-2 border-emerald-500/40 rounded-3xl p-5 shadow-xl space-y-3">
-                <h3 className="text-base font-black text-emerald-300 flex items-center gap-2">
-                  <FileCheck className="w-5 h-5" /> Contrats Acceptés en Cours ({acceptedContracts.length}/3)
-                </h3>
-                {acceptedContracts.map(c => {
-                  const part = PARTS_CATALOG.find(p => p.id === c.partId);
-                  const ready = getMatchingStockForContract(c);
-                  const pct = clamp((ready / c.quantity) * 100, 0, 100);
-                  const canDeliver = ready >= c.quantity;
-                  return (
-                    <div key={c.id} className="bg-slate-950 border border-slate-800 rounded-2xl p-4 space-y-2.5">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div>
-                          <div className="text-xs text-amber-400 font-black uppercase">{c.clientName} • {c.clientBadge}</div>
-                          <div className="text-base font-black text-white">{c.quantity} × {part?.name}</div>
-                        </div>
-                        <div className="text-right font-mono">
-                          <div className="text-emerald-400 font-black text-base">{formatMoney(c.agreedReward)}</div>
-                          <div className="text-xs text-amber-300 flex items-center justify-end gap-1"><Clock className="w-3.5 h-3.5" /> {formatDuration(c.remainingSec)}</div>
-                        </div>
-                      </div>
-                      <div className="text-[11px] font-mono text-slate-400 flex flex-wrap gap-3">
-                        <span>Qualité min : <b className="text-white">{c.minQuality}/100</b></span>
-                        <span>Précision min : <b className="text-white">{c.minPrecision}/100</b></span>
-                        <span>Récompense R&D : <b className="text-cyan-300">+{c.rewardRP} PR</b></span>
-                      </div>
-                      <div className="w-full h-2.5 bg-slate-900 rounded-full overflow-hidden border border-slate-800">
-                        <div className={`h-full transition-all ${canDeliver ? 'bg-emerald-400' : 'bg-cyan-500'}`} style={{ width: `${pct}%` }} />
-                      </div>
-                      <div className="flex items-center justify-between pt-1">
-                        <span className="text-xs font-mono font-bold text-slate-300">Stock conforme prêt : {ready} / {c.quantity}</span>
-                        <button
-                          disabled={!canDeliver}
-                          onClick={() => handleDeliverContract(c.id)}
-                          className={`px-4 py-2 rounded-xl text-xs font-black transition ${canDeliver ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-lg' : 'bg-slate-800 text-slate-500 cursor-not-allowed'}`}
-                        >
-                          {canDeliver ? 'Livrer & Encaisser →' : 'En production...'}
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Appels d'offres disponibles */}
-            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl space-y-3">
-              <div className="flex items-center justify-between">
-                <h3 className="text-base font-black text-white flex items-center gap-2">
-                  <Briefcase className="w-5 h-5 text-amber-400" /> Appels d'Offres Industriels Disponibles
-                </h3>
+      {/* MODALE TUTORIEL RAPIDE */}
+      {showTutorial && (
+        <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
+          <div className="max-w-md w-full bg-slate-900 border border-sky-500/50 rounded-3xl p-5 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-black uppercase text-sky-400">Guide Express • Étape {tutorialStep + 1}/4</span>
+              <button
+                onClick={() => {
+                  localStorage.setItem('cnc_gmp_tuto_seen', '1');
+                  setShowTutorial(false);
+                }}
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <h3 className="text-base font-black text-white">{tutorialSteps[tutorialStep].title}</h3>
+            <p className="text-xs text-slate-300 leading-relaxed">{tutorialSteps[tutorialStep].text}</p>
+            <div className="flex justify-between pt-2">
+              <button
+                onClick={() => setTutorialStep(s => Math.max(0, s - 1))}
+                disabled={tutorialStep === 0}
+                className="px-3 py-1.5 rounded-xl bg-slate-800 text-xs font-bold disabled:opacity-40"
+              >
+                Précédent
+              </button>
+              {tutorialStep < 3 ? (
                 <button
-                  onClick={() => setGame(prev => ({
-                    ...prev,
-                    contracts: [
-                      ...prev.contracts.filter(c => c.status !== 'available'),
-                      FactoryEngine.generateContract(prev.unlockedTechs, globalReputation, certs),
-                      FactoryEngine.generateContract(prev.unlockedTechs, globalReputation, certs),
-                      FactoryEngine.generateContract(prev.unlockedTechs, globalReputation, certs)
-                    ]
-                  }))}
-                  className="text-xs text-cyan-400 hover:text-cyan-300 font-bold flex items-center gap-1"
+                  onClick={() => setTutorialStep(s => s + 1)}
+                  className="px-4 py-1.5 rounded-xl bg-sky-600 text-white text-xs font-black"
                 >
-                  <RefreshCw className="w-3.5 h-3.5" /> Nouvelles offres
+                  Suivant
                 </button>
-              </div>
-
-              {availableContracts.map(c => {
-                const part = PARTS_CATALOG.find(p => p.id === c.partId);
-                const mat = MATERIALS_CATALOG.find(m => m.id === c.materialId);
-                const hasMachine = game.slots.some(s => s && part?.compatibleMachines.includes(s.machineId));
-                const certOk = !c.reqCert || (c.reqCert === 'iso9001' ? certs.iso9001 : certs.en9100);
-                const repOk = globalReputation >= c.minRep;
-                const canAccept = certOk && repOk;
-
-                return (
-                  <div key={c.id} className="bg-slate-950 border border-slate-800 rounded-2xl p-4 space-y-3">
-                    <div className="flex flex-wrap items-start justify-between gap-2">
-                      <div>
-                        <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">{c.clientBadge}</span>
-                        <h4 className="text-sm font-black text-white mt-1">{c.clientName} — {c.quantity} × {part?.name}</h4>
-                        <div className="text-[11px] text-slate-400">Matière : <b>{mat?.name}</b> • Délai : <b>{formatDuration(c.deadlineSec)}</b></div>
-                      </div>
-                      <div className="text-right font-mono">
-                        <div className="text-base font-black text-emerald-400">{formatMoney(c.baseReward)}</div>
-                        <div className="text-[11px] text-cyan-300 font-bold">+{c.rewardRP} PR</div>
-                      </div>
-                    </div>
-
-                    {/* Diagnostic de faisabilité explicite */}
-                    <div className="flex flex-wrap gap-1.5 text-[10px] font-bold">
-                      <span className="px-2 py-1 rounded-lg bg-slate-900 border border-slate-800 text-slate-300">Qualité ≥ {c.minQuality}</span>
-                      <span className="px-2 py-1 rounded-lg bg-slate-900 border border-slate-800 text-slate-300">Précision ≥ {c.minPrecision}</span>
-                      <span className={`px-2 py-1 rounded-lg border ${hasMachine ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300' : 'bg-amber-500/15 border-amber-500/30 text-amber-300'}`}>
-                        {hasMachine ? 'Machine compatible ✓' : 'Machine à installer'}
-                      </span>
-                      {c.reqCert && (
-                        <span className={`px-2 py-1 rounded-lg border ${certOk ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300' : 'bg-rose-500/15 border-rose-500/30 text-rose-300'}`}>
-                          Certif {c.reqCert.toUpperCase()} {certOk ? '✓' : 'manquante'}
-                        </span>
-                      )}
-                      {!repOk && (
-                        <span className="px-2 py-1 rounded-lg border bg-rose-500/15 border-rose-500/30 text-rose-300">
-                          Réputation {c.minRep} requise
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="flex flex-wrap gap-2 pt-1">
-                      <button
-                        disabled={!canAccept}
-                        onClick={() => handleAcceptContract(c.id, 'standard')}
-                        className={`flex-1 py-2 rounded-xl text-xs font-black transition ${canAccept ? 'bg-cyan-600 hover:bg-cyan-500 text-white' : 'bg-slate-900 text-slate-600 cursor-not-allowed'}`}
-                      >
-                        Accepter ({formatMoney(c.baseReward)})
-                      </button>
-                      <button
-                        disabled={!canAccept}
-                        onClick={() => handleAcceptContract(c.id, 'premium')}
-                        className={`px-3 py-2 rounded-xl text-xs font-black transition ${canAccept ? 'bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-slate-950 border border-amber-500/40' : 'bg-slate-900 text-slate-600 cursor-not-allowed'}`}
-                      >
-                        Soumission +15%
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Missions reliées aux vrais événements du jeu */}
-          <div className="xl:col-span-5 bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl space-y-3">
-            <h3 className="text-base font-black text-white flex items-center gap-2">
-              <Target className="w-5 h-5 text-emerald-400" /> Missions & Objectifs Industriels
-            </h3>
-            <div className="space-y-2.5 max-h-[680px] overflow-y-auto custom-scrollbar pr-1">
-              {MISSIONS_CATALOG.map(m => {
-                const claimed = game.claimedMissions.includes(m.id);
-                const done = m.check(missionCtx);
-                const [cur, max] = m.progress(missionCtx);
-                const pct = clamp((cur / max) * 100, 0, 100);
-
-                return (
-                  <div key={m.id} className={`rounded-2xl p-3.5 border ${claimed ? 'bg-slate-950/40 border-slate-800/60 opacity-60' : done ? 'bg-emerald-950/30 border-emerald-500/50' : 'bg-slate-950 border-slate-800'}`}>
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded ${m.type === 'main' ? 'bg-cyan-500/15 text-cyan-300' : 'bg-purple-500/15 text-purple-300'}`}>
-                          {m.type === 'main' ? 'Principale' : 'Secondaire'}
-                        </span>
-                        <h4 className="text-sm font-black text-white mt-1">{m.title}</h4>
-                        <p className="text-[11px] text-slate-400">{m.desc}</p>
-                      </div>
-                      <div className="text-right font-mono text-[11px] shrink-0">
-                        <div className="text-emerald-400 font-black">+{formatMoney(m.rewardMoney)}</div>
-                        <div className="text-cyan-300 font-bold">+{m.rewardRP} PR</div>
-                      </div>
-                    </div>
-
-                    <div className="mt-2.5 flex items-center gap-3">
-                      <div className="flex-1 h-2 bg-slate-900 rounded-full overflow-hidden border border-slate-800">
-                        <div className={`h-full ${done ? 'bg-emerald-400' : 'bg-cyan-500'}`} style={{ width: `${pct}%` }} />
-                      </div>
-                      <span className="text-[10px] font-mono text-slate-400">{cur}/{max}</span>
-                      {claimed ? (
-                        <span className="text-[10px] font-black text-emerald-400">Validée ✓</span>
-                      ) : done ? (
-                        <button
-                          onClick={() => handleClaimMission(m)}
-                          className="px-3 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-[11px] font-black shadow"
-                        >
-                          Réclamer
-                        </button>
-                      ) : null}
-                    </div>
-                  </div>
-                );
-              })}
+              ) : (
+                <button
+                  onClick={() => {
+                    localStorage.setItem('cnc_gmp_tuto_seen', '1');
+                    setShowTutorial(false);
+                  }}
+                  className="px-4 py-1.5 rounded-xl bg-emerald-600 text-white text-xs font-black"
+                >
+                  C’est parti !
+                </button>
+              )}
             </div>
           </div>
         </div>
-      </div>
-    );
-  };
+      )}
 
-  // ==========================================================================
-  // VUE 6 : ÉQUIPE & RECRUTEMENT (VOS 12 CARTES + AVATARS 5x2 PRÉSERVÉS)
-  // ==========================================================================
-  const renderStaffTab = () => {
-    const grouped = {};
-    game.inventory.forEach(item => {
-      const tpl = EMPLOYEES_CATALOG.find(e => e.id === item.templateId);
-      if (!tpl) return;
-      const key = `${tpl.id}_${item.stars || 1}`;
-      if (!grouped[key]) grouped[key] = { template: { ...tpl, ...item, stars: item.stars || 1 }, count: 0, items: [] };
-      grouped[key].count++;
-      grouped[key].items.push(item);
-    });
-    const list = Object.values(grouped).sort((a, b) => b.template.qualBonus - a.template.qualBonus);
-
-    return (
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div className="lg:col-span-4 bg-slate-900 border border-slate-800 rounded-3xl p-6 text-center shadow-xl flex flex-col items-center justify-center min-h-[420px]">
-          {chestAnim ? (
-            <div className="py-10">
-              <Package className="w-20 h-20 text-amber-400 mx-auto animate-bounce" />
-              <div className="mt-4 text-lg font-black text-amber-300">Recrutement en cours...</div>
+      {/* BARRE SUPÉRIEURE */}
+      <header className="bg-slate-900/95 border-b border-slate-800 px-4 py-3 sticky top-0 z-30">
+        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-sky-500 to-blue-700 flex items-center justify-center font-black text-white shadow-lg">
+              GMP
             </div>
-          ) : chestResult ? (
-            <div className="flex flex-col items-center w-full animate-card-reveal">
-              <div className="text-xs font-black uppercase text-amber-400 mb-2">Nouveau Spécialiste Recruté !</div>
-              <div className="w-56"><EmployeeCard employee={chestResult} spriteSheetUrl={spriteSheetUrl} /></div>
-              <button onClick={() => setChestResult(null)} className="mt-4 px-5 py-2 rounded-xl bg-slate-800 text-white text-xs font-black">Continuer</button>
+            <div>
+              <h1 className="text-base sm:text-lg font-black tracking-tight text-white">CNC Tycoon GMP</h1>
+              <p className="text-[11px] text-slate-400">Atelier Industriel &amp; Métrologie</p>
             </div>
-          ) : (
-            <>
-              <div className="w-20 h-20 rounded-3xl bg-amber-500/15 border-2 border-amber-400/50 flex items-center justify-center mb-4">
-                <Package className="w-10 h-10 text-amber-400" />
-              </div>
-              <h2 className="text-xl font-black text-white">Caisse de Recrutement</h2>
-              <p className="text-xs text-slate-400 mt-1 mb-5">
-                Recrutez vos opérateurs et ingénieurs. Affectés sur une machine, ils réduisent les temps de cycle et augmentent la <b>Qualité</b> et la <b>Précision</b> réelles des pièces produites !
-              </p>
-              <button
-                disabled={game.money < chestCost}
-                onClick={handleOpenChest}
-                className={`w-full py-3.5 rounded-2xl font-black text-sm transition ${game.money >= chestCost ? 'bg-gradient-to-r from-amber-400 to-orange-500 text-slate-950 shadow-lg' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}
-              >
-                Recruter ({formatMoney(chestCost)})
-              </button>
-              <div className="mt-4 flex flex-wrap justify-center gap-1.5 text-[10px] font-mono">
-                {Object.entries(CHEST_ODDS).map(([r, p]) => (
-                  <span key={r} className={`${RARITY_META[r].text} bg-slate-950 px-2 py-1 rounded-lg border border-slate-800`}>{RARITY_META[r].label} {p}%</span>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
-
-        <div className="lg:col-span-8 bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl">
-          <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-            <h3 className="text-base font-black text-white flex items-center gap-2">
-              <Users className="w-5 h-5 text-emerald-400" /> Équipe & Spécialistes ({game.inventory.length})
-            </h3>
-            <label className="cursor-pointer text-xs text-cyan-300 hover:text-white font-black bg-cyan-500/15 hover:bg-cyan-600 border border-cyan-500/40 px-3 py-1.5 rounded-full flex items-center gap-1.5 transition">
-              <ImageIcon className="w-3.5 h-3.5" />
-              {avatarSource === 'cloud' ? 'Avatars Cloud actifs (Changer)' : 'Importer la planche d\'avatars'}
-              <input type="file" accept="image/*" onChange={handleUploadSpriteSheet} className="hidden" />
-            </label>
           </div>
 
-          {list.length === 0 ? (
-            <div className="py-16 text-center text-slate-500 border-2 border-dashed border-slate-800 rounded-2xl text-sm">
-              Aucun spécialiste recruté. Ouvrez une caisse pour renforcer la qualité et la cadence de vos machines !
+          <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
+            <div className="bg-emerald-950/70 border border-emerald-700/50 px-3 py-1.5 rounded-xl text-xs font-black text-emerald-300">
+              {formatMoney(money)}
             </div>
-          ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-              {list.map(g => {
-                const freeCount = g.items.filter(i => !game.slots.some(s => s && s.employeeId === i.uid)).length;
-                return (
-                  <EmployeeCard
-                    key={`${g.template.id}_${g.template.stars}`}
-                    employee={g.template}
-                    count={g.count}
-                    onMerge={freeCount >= 3 ? () => handleMergeCards(g.template) : null}
-                    spriteSheetUrl={spriteSheetUrl}
-                  />
-                );
-              })}
+            <div className="bg-purple-950/70 border border-purple-700/50 px-3 py-1.5 rounded-xl text-xs font-black text-purple-300">
+              {Math.floor(researchPoints)} RP
             </div>
-          )}
+            <button
+              onClick={() => setActiveTab('tech')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-black border flex items-center gap-1.5 transition-all ${
+                activeTab === 'tech'
+                  ? 'bg-cyan-600 border-cyan-400 text-white'
+                  : 'bg-slate-800 border-slate-700 text-cyan-300 hover:bg-slate-700'
+              }`}
+            >
+              <Cpu className="w-3.5 h-3.5" /> R&amp;D
+            </button>
+            <button
+              onClick={() => setActiveTab('missions')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-black border flex items-center gap-1.5 relative transition-all ${
+                activeTab === 'missions'
+                  ? 'bg-amber-600 border-amber-400 text-white'
+                  : 'bg-slate-800 border-slate-700 text-amber-300 hover:bg-slate-700'
+              }`}
+            >
+              <Trophy className="w-3.5 h-3.5" /> Missions
+              {readyMissionCount > 0 && (
+                <span className="ml-1 px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[10px]">
+                  {readyMissionCount}
+                </span>
+              )}
+            </button>
+            <button
+              onClick={() => { setTutorialStep(0); setShowTutorial(true); }}
+              className="p-1.5 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 hover:text-white"
+              title="Guide rapide"
+            >
+              <HelpCircle className="w-4 h-4" />
+            </button>
+          </div>
         </div>
-      </div>
-    );
-  };
 
-  // ==========================================================================
-  // VUE 7 : CLASSEMENT GÉNÉRAL INDUSTRIEL
-  // ==========================================================================
-  const renderLeaderboardTab = () => (
+        {/* NAVIGATION DES ONGLETS */}
+        <nav className="max-w-7xl mx-auto mt-3 flex gap-1.5 overflow-x-auto pb-1">
+          {[
+            { id: 'workshop', label: 'Atelier & Plan 2D' },
+            { id: 'machines', label: 'Parc Machines' },
+            { id: 'stocks', label: 'Stocks & Ventes' },
+            { id: 'metrology', label: 'Métrologie' },
+            { id: 'contracts', label: "Appels d'Offres" },
+            { id: 'gacha', label: 'Coffres & Cartes' },
+            { id: 'atelier', label: 'Locaux & Sols' },
+            { id: 'leaderboard', label: 'Classement' }
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
+                activeTab === tab.id
+                  ? 'bg-sky-600 text-white shadow'
+                  : 'bg-slate-800/80 text-slate-400 hover:text-white hover:bg-slate-800'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </nav>
+      </header>
+
+      {/* CONTENU PRINCIPAL */}
+      <main className="flex-1 max-w-7xl w-full mx-auto p-4">
+        {activeTab === 'workshop' && renderWorkshop()}
+        {activeTab === 'machines' && renderMachines()}
+        {activeTab === 'stocks' && renderStocks()}
+        {activeTab === 'metrology' && renderMetrology()}
+        {activeTab === 'contracts' && renderContracts()}
+        {activeTab === 'tech' && renderTechTree()}
+        {activeTab === 'gacha' && renderGacha()}
+        {activeTab === 'missions' && renderMissions()}
+        {activeTab === 'atelier' && renderAtelier()}
+        {activeTab === 'leaderboard' && renderLeaderboard()}
+      </main>
+    </div>
+  );
+}
