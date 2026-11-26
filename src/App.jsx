@@ -491,10 +491,10 @@ function generateContractOffer(reputation, unlockedTechs) {
 // 4. COMPOSANTS GRAPHIQUES SVG (BROCHE ROTATIVE, PIÈCES, MACHINES, PORTRAITS)
 // ============================================================================
 const ManualSpindleSVG = ({ rpm, sparks }) => (
-  <svg viewBox="0 0 140 140" className="w-28 h-28 mx-auto select-none">
+  <svg viewBox="0 0 140 140" className="w-36 h-36 mx-auto select-none pointer-events-none">
     <defs>
       <radialGradient id="spindleGlow" cx="50%" cy="50%" r="50%">
-        <stop offset="0%" stopColor="#38bdf8" stopOpacity={rpm > 0 ? 0.35 : 0.08} />
+        <stop offset="0%" stopColor="#38bdf8" stopOpacity={rpm > 0 ? 0.45 : 0.12} />
         <stop offset="100%" stopColor="#0f172a" stopOpacity="0" />
       </radialGradient>
     </defs>
@@ -505,7 +505,7 @@ const ManualSpindleSVG = ({ rpm, sparks }) => (
       r="56"
       fill="none"
       stroke="#38bdf8"
-      strokeWidth="3"
+      strokeWidth="3.5"
       strokeDasharray="352"
       strokeDashoffset={352 - Math.min(352, (rpm / 6000) * 352)}
       strokeLinecap="round"
@@ -719,7 +719,7 @@ const SupplyCrateSVG = ({ isOpening, rarityColor = '#38bdf8' }) => (
 const TechNodeGlyph = ({ node, unlocked, available }) => {
   const c = unlocked ? '#38bdf8' : available ? '#facc15' : '#64748b';
   return (
-    <svg viewBox="0 0 36 36" className="w-9 h-9">
+    <g>
       {node.id === 'prod_conv' && (
         <g stroke={c} strokeWidth="2" fill="none">
           <rect x="10" y="9" width="16" height="5" rx="1" />
@@ -902,7 +902,7 @@ const TechNodeGlyph = ({ node, unlocked, available }) => {
           <path d="M11 17 V23 C11 25, 25 25, 25 23 V17" />
         </g>
       )}
-    </svg>
+    </g>
   );
 };
 
@@ -1726,32 +1726,35 @@ export default function App() {
     const floorObj = ATELIER_UPGRADES.floors.find(f => f.id === atelier.floorId) || ATELIER_UPGRADES.floors[0];
     const readyPartsCount = partLots.filter(l => l.inspected && l.isConforming).reduce((a, b) => a + b.qty, 0);
     const uninspectedCount = partLots.filter(l => !l.inspected).reduce((a, b) => a + b.qty, 0);
+    const pcsPerClick = Math.min(5, 1 + Math.floor((clickLevel - 1) / 2));
 
     return (
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         <div className="lg:col-span-4 bg-slate-900/95 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between space-y-4">
-          <div>
-            <div className="flex items-center justify-between mb-2">
+          <div className="flex flex-col items-center">
+            <div className="w-full flex items-center justify-between mb-3">
               <span className="text-xs font-black uppercase text-sky-400">Poste Manuel &amp; Prototypage</span>
               <span className="text-xs font-bold text-slate-400">Niv. {clickLevel}</span>
             </div>
-            <ManualSpindleSVG rpm={spindleRpm} sparks={spindleSparks} />
-            <div className="text-center mt-2">
-              <div className="text-xs font-black text-cyan-300">{spindleRpm} RPM</div>
-              <p className="text-[11px] text-slate-400 mt-1">
-                Cliquez avec la souris pour usiner des <b className="text-slate-200">Entretoises Aluminium</b> (à contrôler en Métrologie avant vente).
-              </p>
-            </div>
-          </div>
 
-          <div className="space-y-2">
             <button
               type="button"
               onClick={handleManualMachining}
-              className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-sky-500 to-cyan-600 hover:from-sky-400 hover:to-cyan-500 active:scale-[0.99] text-white font-black text-sm shadow-lg shadow-sky-500/20 transition-all select-none"
+              className="group relative w-48 h-48 rounded-full bg-gradient-to-b from-slate-800 via-slate-900 to-slate-950 border-2 border-sky-500/50 hover:border-cyan-400 active:scale-95 shadow-2xl shadow-sky-500/20 hover:shadow-cyan-400/30 flex flex-col items-center justify-center transition-all select-none cursor-pointer"
+              title="Cliquez sur la broche pour usiner"
             >
-              USINER UNE PIÈCE (+{Math.min(5, 1 + Math.floor((clickLevel - 1) / 2))})
+              <ManualSpindleSVG rpm={spindleRpm} sparks={spindleSparks} />
+              <span className=" -mt-2 px-2.5 py-0.5 rounded-full bg-slate-950/90 border border-sky-500/40 text-[11px] font-black text-cyan-300">
+                {spindleRpm} RPM • +{pcsPerClick} pc{pcsPerClick > 1 ? 's' : ''}
+              </span>
             </button>
+
+            <p className="text-[11px] text-slate-400 text-center mt-3">
+              Cliquez directement sur la <b className="text-cyan-300">broche CNC</b> pour usiner des <b className="text-slate-200">Entretoises Aluminium</b>.
+            </p>
+          </div>
+
+          <div className="space-y-2">
             <button
               type="button"
               onClick={handleUpgradeManual}
@@ -2370,8 +2373,11 @@ export default function App() {
         </div>
 
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
-          <div className="hidden md:block xl:col-span-8 bg-[#050811] border border-slate-800 rounded-2xl p-3 relative overflow-hidden shadow-2xl">
-            <svg viewBox="0 0 1000 560" className="w-full h-auto select-none">
+          <div className="xl:col-span-8 bg-[#050811] border border-slate-800 rounded-2xl p-2 sm:p-3 relative overflow-x-auto overflow-y-auto max-h-[54vh] md:max-h-none shadow-2xl">
+            <div className="md:hidden sticky top-1 left-2 z-10 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-900/90 border border-cyan-500/40 text-[10px] font-bold text-cyan-300 mb-1 backdrop-blur">
+              <span>👆 Glissez avec le doigt pour explorer la constellation</span>
+            </div>
+            <svg viewBox="0 0 1000 560" className="w-[820px] sm:w-[920px] md:w-full h-auto select-none block">
               <defs>
                 <radialGradient id="constellationBg" cx="50%" cy="50%" r="55%">
                   <stop offset="0%" stopColor="#0f1e3a" stopOpacity="0.9" />
@@ -2526,45 +2532,6 @@ export default function App() {
             </svg>
           </div>
 
-          <div className="md:hidden bg-slate-900/95 border border-slate-800 rounded-2xl p-3 space-y-3">
-            <div className="flex gap-1.5 overflow-x-auto pb-1">
-              {branches.map(b => (
-                <button
-                  key={b}
-                  onClick={() => setMobileTechBranch(b)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-black whitespace-nowrap border ${mobileTechBranch === b ? 'bg-sky-600 border-sky-400 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}
-                >
-                  {b}
-                </button>
-              ))}
-            </div>
-            <div className="space-y-2">
-              {TECH_TREE_CATALOG.filter(t => t.branch === mobileTechBranch).map(node => {
-                const unlocked = unlockedTechs.includes(node.id);
-                const reqOk = (!node.req || unlockedTechs.includes(node.req)) && (!node.crossReq || unlockedTechs.includes(node.crossReq));
-                const available = !unlocked && reqOk;
-                return (
-                  <div
-                    key={node.id}
-                    onClick={() => setSelectedTechId(node.id)}
-                    className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${selectedTechId === node.id ? 'border-sky-400 bg-slate-800' : 'border-slate-800 bg-slate-950/80'}`}
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <TechNodeGlyph node={node} unlocked={unlocked} available={available} />
-                      <div>
-                        <div className="text-xs font-black text-white">{node.name}</div>
-                        <div className="text-[11px] text-slate-400">{node.effect}</div>
-                      </div>
-                    </div>
-                    <span className={`text-[10px] font-black px-2 py-1 rounded ${unlocked ? 'bg-emerald-900/60 text-emerald-300' : available ? 'bg-amber-900/60 text-amber-300' : 'bg-slate-800 text-slate-500'}`}>
-                      {unlocked ? 'ACQUIS' : available ? 'DISPO' : 'VERROUILLÉ'}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
           <div className="xl:col-span-4 bg-slate-900/95 border border-slate-700 rounded-2xl p-4 flex flex-col justify-between">
             <div className="space-y-3">
               <div className="flex items-center justify-between">
@@ -2585,7 +2552,9 @@ export default function App() {
 
               <div className="flex items-center gap-3 bg-slate-950/90 border border-slate-800 rounded-xl p-3">
                 <div className="w-12 h-12 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-center shrink-0">
-                  <TechNodeGlyph node={selectedNode} unlocked={isSelUnlocked} available={isSelAvailable} />
+                  <svg viewBox="0 0 36 36" className="w-9 h-9">
+                    <TechNodeGlyph node={selectedNode} unlocked={isSelUnlocked} available={isSelAvailable} />
+                  </svg>
                 </div>
                 <div>
                   <h3 className="text-base font-black text-white">{selectedNode.name}</h3>
